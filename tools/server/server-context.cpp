@@ -252,6 +252,9 @@ struct server_slot {
     common_speculative * spec;
 
     llama_tokens spec_draft;
+
+    // draft candidates per token in spec_draft; only draft-simple and draft-mtp fill it
+    std::vector<std::vector<llama_token_data>> spec_draft_q;
     llama_tokens spec_prompt;
     std::vector<int32_t> spec_i_batch;
     common_prompt_checkpoint spec_ckpt;
@@ -469,6 +472,11 @@ struct server_slot {
 
     bool can_speculate() const {
         return !!spec;
+    }
+
+    // at temp 0 both p and q are point masses, so rejection is the same as sample-and-match
+    bool use_spec_rejection() const {
+        return task && task->params.sampling.temp > 0.0f;
     }
 
     void add_token(const completion_token_output & token) {
@@ -1595,7 +1603,9 @@ private:
             }
 
             if (ret != nullptr) {
-                const float f_keep = (f_sim_best*task.tokens.size()) / ret->prompt.tokens.size();
+                // empty slot: nothing to keep, avoid 0/0
+                const float f_keep = ret->prompt.tokens.size() > 0 ?
+                    (f_sim_best*task.tokens.size()) / ret->prompt.tokens.size() : 0.0f;
 
                 if (task.id_slot == -1) {
                     SLT_INF(*ret, "selected slot by LCP similarity, f_sim_best = %.3f (> %.3f thold), f_keep = %.3f\n",
@@ -1634,10 +1644,12 @@ private:
         }
 
         if (ret) {
-            update_cache = update_cache && prompt_cache;
-
             // cache prompts only for completion tasks
-            update_cache = update_cache && task.type == SERVER_TASK_TYPE_COMPLETION;
+            const bool can_cache = prompt_cache && task.type == SERVER_TASK_TYPE_COMPLETION;
+
+            // the checks above only tell if the outgoing state is worth saving
+            // the cache can still hold a better start for this task, so ask it
+            update_cache = can_cache && (update_cache || prompt_cache->has_better(ret->prompt, task.tokens));
 
             if (update_cache) {
                 SRV_TRC("%s", "updating prompt cache\n");
@@ -2305,9 +2317,25 @@ private:
         return true;
     }
 
+    // whether the memory state is valid only at its exact final position (hybrid/recurrent),
+    // as opposed to a range of positions (SWA)
+    bool ctx_tgt_state_exact() const {
+        return ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
+               ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS;
+    }
+
     // n_tokens_cur: the number of tokens added to the batch for the current slot
     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
         const int id_task = slot.task->id;
+
+        // an equivalent checkpoint already exists (e.g. it was just restored)
+        if (!slot.prompt.checkpoints.empty() &&
+                slot.prompt.checkpoints.back().n_tokens == slot.prompt.n_tokens() - n_tokens_cur &&
+                slot.prompt.checkpoints.back().pos_max == pos_max) {
+            // adopt the checkpoint so the min-step eviction below does not erase it
+            slot.prompt.checkpoints.back().id_task = id_task;
+            return;
+        }
 
         // evict checkpoints within min-step of a previous checkpoint, unless they were
         // created by the current task
@@ -2356,8 +2384,13 @@ private:
         cur.id_task = id_task;
 
         // [TAG_CHECKPOINTS_FIX_POS_MIN]
-        // TODO: here we incorrectly deterimne that the saved checkpoint data covers the [pos_min, pos_max] range
-        //       this is not true for SWA models: https://github.com/ggml-org/llama.cpp/pull/24411#issuecomment-4677983225
+        // the state of hybrid/recurrent memory is valid only at its exact final position
+        // TODO: for SWA models the saved range can still claim more than it actually covers:
+        //       https://github.com/ggml-org/llama.cpp/pull/24411#issuecomment-4677983225
+        if (ctx_tgt_state_exact()) {
+            pos_min = pos_max;
+        }
+
         cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
@@ -2365,7 +2398,7 @@ private:
         // stash the draft's speculative state with the checkpoint
         common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
 
-        SLT_TRC(slot,
+        SLT_INF(slot,
                 "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
                 (int) slot.prompt.checkpoints.size(), params_base.n_ctx_checkpoints, cur.pos_min,
                 cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
@@ -3006,6 +3039,9 @@ private:
                 if (n_draft_max > 0) {
                     GGML_ASSERT(slot.can_speculate());
 
+                    // stale candidates: a replay never reads them, a new draft refills them
+                    slot.spec_draft_q.clear();
+
                     if (!slot.spec_draft.empty()) {
                         // we have a previous (partial) draft to reuse
                         if (use_ckpt_tgt) {
@@ -3025,6 +3061,8 @@ private:
 
                         slot.spec_prompt = slot.prompt.tokens.get_text_tokens();
 
+                        const bool spec_reject = slot.use_spec_rejection();
+
                         common_speculative_get_draft_params(spec.get(), slot.id) = {
                             /* .drafting = */ true,
                             /* .n_max    = */ n_draft_max,
@@ -3032,6 +3070,8 @@ private:
                             /* .id_last  = */ slot.sampled,
                             /* .prompt   = */ &slot.spec_prompt,
                             /* .result   = */ &slot.spec_draft,
+                            /* .result_q = */ spec_reject ? &slot.spec_draft_q : nullptr,
+                            /* .sampling = */ spec_reject ? &slot.task->params.sampling : nullptr,
                         };
 
                         drafting.push_back(&slot);
@@ -3290,6 +3330,10 @@ private:
 
                             llama_pos pos_next = slot.prompt.tokens.pos_next(n_past);
 
+                            // pos_next can be reduced below by a checkpoint restore - remember the
+                            // divergence point for the checkpoint invalidation
+                            const llama_pos pos_next_lcp = pos_next;
+
                             // ref: https://github.com/ggml-org/llama.cpp/pull/24110
                             const bool has_new_tokens = (n_past < slot.task->n_tokens());
 
@@ -3347,6 +3391,10 @@ private:
                                 }
 
                                 if (pos_min >= pos_min_thold) {
+                                    // whether the checkpoints hold a state that is valid only at its exact
+                                    // final position (hybrid/recurrent memory), as opposed to a range (SWA)
+                                    const bool ckpt_exact = ctx_tgt_state_exact();
+
                                     // search for a context checkpoint
                                     const auto it = std::find_if(
                                         slot.prompt.checkpoints.rbegin(),
@@ -3354,6 +3402,13 @@ private:
                                         [&](const auto & cur) {
                                             // guarantee that a checkpoint will result in at least one token being processed [TAG_PROMPT_LOGITS]
                                             SLT_TRC(slot, "checking checkpoint with [%d, %d] against %d...\n", cur.pos_min, cur.pos_max, pos_min_thold);
+                                            if (ckpt_exact) {
+                                                // usable only if the tokens up to and including its position are
+                                                // a prefix of the new prompt, with at least one token left to
+                                                // process [TAG_PROMPT_LOGITS]. the state is self-contained, so
+                                                // the SWA slack in pos_min_thold does not apply
+                                                return cur.pos_max < pos_next - (has_new_tokens ? 0 : 1);
+                                            }
                                             // workaround for [TAG_CHECKPOINTS_FIX_POS_MIN]
                                             if (cur.pos_max > pos_next) {
                                                 return false;
@@ -3373,11 +3428,11 @@ private:
 
                                         pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
                                         n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
-                                        SLT_TRC(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
+                                        SLT_INF(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
                                     }
 
                                     if (do_reset) {
-                                        SLT_TRC(slot, "forcing full prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent memory, see %s)\n",
+                                        SLT_INF(slot, "forcing full prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent memory, see %s)\n",
                                                 "https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055");
                                         pos_next = 0;
                                         n_past = 0;
@@ -3386,11 +3441,19 @@ private:
                             }
 
                             {
-                                // erase any checkpoints with pos_max > pos_next
+                                // erase any checkpoints that cover diverged content - once the new
+                                // tokens are decoded, their staleness would become undetectable
+                                const llama_pos pos_stale = std::min(pos_next_lcp, slot.task->tokens.pos_next());
+
+                                // an exact checkpoint at the divergence position irreversibly contains
+                                // the diverged token, while a range (SWA) checkpoint gets that entry
+                                // overwritten when decoding resumes from it
+                                const llama_pos pos_stale_min = ctx_tgt_state_exact() ? pos_stale : pos_stale + 1;
+
                                 for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end();) {
                                     const auto & cur = *it;
-                                    if (cur.pos_max > pos_next) {
-                                        SLT_TRC(slot, "erased invalidated context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_swa = %d, pos_next = %d, size = %.3f MiB)\n", cur.pos_min, cur.pos_max, cur.n_tokens, n_swa, pos_next, (float) cur.size() / 1024 / 1024);
+                                    if (cur.pos_max > pos_next || cur.pos_max >= pos_stale_min) {
+                                        SLT_INF(slot, "erased invalidated context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_swa = %d, pos_next = %d, size = %.3f MiB)\n", cur.pos_min, cur.pos_max, cur.n_tokens, n_swa, pos_next, (float) cur.size() / 1024 / 1024);
                                         it = slot.prompt.checkpoints.erase(it);
                                     } else {
                                         ++it;
@@ -3912,11 +3975,24 @@ private:
 
                 GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
                 const auto & synth_probs = common_speculative_get_synth_probs(spec.get());
-                auto accepted = synth_probs.empty()
-                    ? common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft)
-                    : server_sample_and_accept_synth(
+
+                // drafters that fill no distribution fall back here, as does a chained draft
+                const bool use_rejection = slot.use_spec_rejection() &&
+                                           !slot.spec_draft.empty() &&
+                                           (slot.spec_is_replay ||
+                                            slot.spec_draft_q.size() == slot.spec_draft.size());
+
+                std::vector<llama_token> accepted;
+                if (!synth_probs.empty()) {
+                    // synthetic acceptance replaces verification entirely, so it comes first
+                    accepted = server_sample_and_accept_synth(
                             slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
                             synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
+                } else if (use_rejection) {
+                    accepted = common_sampler_sample_and_accept_n_rejection(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft, slot.spec_draft_q, slot.spec_is_replay);
+                } else {
+                    accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft);
+                }
                 slot.spec_i_batch.clear();
 
                 GGML_ASSERT(accepted.size() >= 1);
