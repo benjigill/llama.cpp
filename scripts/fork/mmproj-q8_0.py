@@ -37,17 +37,20 @@ def main() -> None:
     tensors = []
     for t in reader.tensors:
         data, qtype = t.data, t.tensor_type
+        # note: t.shape is in elements (ne0 first); t.data is raw bytes for BF16
         quantize = (
             qtype in (gguf.GGMLQuantizationType.F16, gguf.GGMLQuantizationType.BF16, gguf.GGMLQuantizationType.F32)
-            and len(data.shape) == 2
+            and len(t.shape) == 2
             and t.name.endswith(".weight")
             and not any(k in t.name for k in KEEP)
-            and data.shape[-1] % 32 == 0
+            and int(t.shape[0]) % 32 == 0
         )
         if quantize:
             f32 = gguf.quants.dequantize(data, qtype)
             data, qtype = gguf.quants.quantize(f32, gguf.GGMLQuantizationType.Q8_0), gguf.GGMLQuantizationType.Q8_0
             n_q += 1
+        else:
+            print(f"keeping {t.name} {qtype.name} {[int(x) for x in t.shape]}")
         tensors.append((t.name, data, qtype))
         writer.add_tensor_info(t.name, data.shape, data.dtype, data.nbytes, qtype)
 
