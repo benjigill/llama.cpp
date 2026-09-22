@@ -274,5 +274,6 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #27694 rejection-sampling verification for MTP - higher draft acceptance at temp > 0; needs `--spec-draft-sampling probabilistic`
 - #25592 hybrid/recurrent checkpoint handling - reuse checkpoints across agent turns instead of full re-processing
 - #28702 CUDA fused Q4_K gate/up + SwiGLU MMQ for prefill - +4-11% pp on Qwen3.x-27B Q4_K_M upstream; KLD vs master (-sm tensor, q8_0/q4_0 KV) 0.0098, same class as master -sm layer vs tensor (0.0079): rounding, not corruption
+- local meta/CUDA gate-up alloc dep - keep the FFN input alive for the fused #28702 kernel under -sm tensor and for up-before-gate graphs (Qwen); memory-safety fix, no speed change expected
 
 Benchmark: `scripts/fork/bench_qwen38.py` (A/B vs a master build, see the header of the file).

@@ -4563,10 +4563,12 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
             if (i + 2 < cgraph->n_nodes && cgraph->nodes[i + 2]->op == GGML_OP_GLU) {
                 ggml_tensor * glu  = cgraph->nodes[i + 2];
-                ggml_tensor * gate = cgraph->nodes[i];
-                ggml_tensor * up   = cgraph->nodes[i + 1];
-                if (glu->src[0] == gate && glu->src[1] == up &&
-                        ggml_cuda_mul_mat_q_gate_up_swiglu_matches(up, gate, glu, cuda_ctx->device)) {
+                ggml_tensor * gate = glu->src[0];
+                ggml_tensor * up   = glu->src[1];
+                // graph_compute fuses either node order (e.g. Qwen builds up before gate)
+                const bool adjacent = (gate == cgraph->nodes[i] && up == cgraph->nodes[i + 1]) ||
+                                      (gate == cgraph->nodes[i + 1] && up == cgraph->nodes[i]);
+                if (adjacent && ggml_cuda_mul_mat_q_gate_up_swiglu_matches(up, gate, glu, cuda_ctx->device)) {
                     params->add_alloc_dep(params->user_data, up->src[1], glu);
                     i += 2;
                     continue;
