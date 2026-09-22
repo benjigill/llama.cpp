@@ -269,4 +269,9 @@ Expect every change here to be long-lived. Upstream PRs are slow to merge, so as
 
 Keep this list current. One line per patch: upstream PR (or `local`), short name, why we carry it.
 
-- (none yet)
+- #28265 qwen35 ssm_out 2D - one mat-mul instead of n_seqs mat-vecs; faster decode with -np > 1
+- #28992 server prompt cache lookups - stop skipping cache loads for shorter-prefix/empty slots
+- #27694 rejection-sampling verification for MTP - higher draft acceptance at temp > 0; needs `--spec-draft-sampling probabilistic`
+- #25592 hybrid/recurrent checkpoint handling - reuse checkpoints across agent turns instead of full re-processing
+
+Benchmark: `scripts/fork/bench_qwen38.py` (A/B vs a master build, see the header of the file).
