@@ -265,6 +265,10 @@ Expect every change here to be long-lived. Upstream PRs are slow to merge, so as
 - Development may happen on a machine without CUDA (macOS). Code there, but build and benchmark on the target Linux box before keeping a patch.
 - The upstream contribution rules above still apply if a change is ever proposed upstream: the human writes the PR text, comments and replies.
 
+### No private data in commits
+
+Never commit local usernames, home or mount paths, hostnames, emails, API keys, model file names or launch scripts. Use placeholders (`<model.gguf>`, `build/bin`) in docs and scripts. Benchmark output (`bench-results/`) records local paths and stays untracked. Each clone installs `scripts/fork/leak-check.sh` as its `pre-commit` and `commit-msg` hook (see the header of the script); private patterns go in `.git/info/leak-patterns`.
+
 ### Carried patches
 
 Keep this list current. One line per patch: upstream PR (or `local`), short name, why we carry it.
