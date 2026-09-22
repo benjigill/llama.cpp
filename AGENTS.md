@@ -247,3 +247,26 @@ Chat template and parser:
 - [PEG parser](docs/development/parsing.md) - alternative to regex that llama.cpp uses to parse model's output
 - [Auto parser](docs/autoparser.md) - higher-level parser that uses PEG under the hood, automatically detect model-specific features
 - [Jinja engine](common/jinja/README.md)
+
+---
+
+## Fork Policy (benjigill/llama.cpp)
+
+This is a private fork tuned for one workload: **Qwen3.8-27B (arch `qwen35`, 48 GDN + 16 full-attention layers, embedded MTP head), Q4_K_M, on 2x NVIDIA Blackwell (RTX 5070 12GB + RTX 5070 Ti 16GB, sm_120), CUDA 13.x, `--split-mode tensor`, `llama-server` with MTP + ngram-mod speculative decoding and a large RAM prompt cache.**
+
+Expect every change here to be long-lived. Upstream PRs are slow to merge, so assume our patches will be carried and rebased for months. Design for that:
+
+- Stay close to `master`. Rebase onto (or merge) upstream `master` often, in small steps, so conflicts stay small.
+- Prefer cherry-picking open upstream PRs over writing our own code. Record the upstream PR number in the commit subject, e.g. `cuda : fuse Q4_K gate/up + swiglu (upstream #28702)`. When the PR merges upstream, drop our copy during the next rebase.
+- Keep each carried patch as one self-contained commit (or a short series) so it can be dropped, reordered or re-applied on its own. Do not mix unrelated changes in one commit.
+- Minimize the diff footprint: touch as few files and hot functions as possible. Prefer additive code paths gated on type/arch/env var over edits to shared logic. Avoid reformatting or moving code.
+- Do not edit upstream text in this file; add fork notes only in this section, so upstream edits to AGENTS.md merge cleanly.
+- Every performance patch needs before/after numbers on the target machine (`llama-bench` for pp/tg, `llama-server` for spec-decode acceptance and t/s) and a correctness check (`test-backend-ops` for touched ops, perplexity or KLD vs master for numeric changes). Record the numbers in the commit message.
+- Development may happen on a machine without CUDA (macOS). Code there, but build and benchmark on the target Linux box before keeping a patch.
+- The upstream contribution rules above still apply if a change is ever proposed upstream: the human writes the PR text, comments and replies.
+
+### Carried patches
+
+Keep this list current. One line per patch: upstream PR (or `local`), short name, why we carry it.
+
+- (none yet)
