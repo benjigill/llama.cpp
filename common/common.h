@@ -356,6 +356,8 @@ struct common_params_speculative_ngram_mod {
 
     int32_t n_max = 64;
     int32_t n_min = 48;
+
+    int32_t size_mib = 16; // hash table size in MiB (4-byte entries)
 };
 
 struct common_params_speculative_ngram_map {

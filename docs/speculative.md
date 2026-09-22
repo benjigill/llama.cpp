@@ -169,7 +169,7 @@ Add basic ngram hasher for speculative decoding:
 
 Some characteristics:
 
-- Lightweight (~16 MB)
+- Lightweight (16 MiB by default, see `--spec-ngram-mod-size`)
 - Constant memory and complexity
 - Can generate variable draft lengths (i.e. m is not fixed)
 
@@ -320,6 +320,8 @@ Use exactly one of these options:
                                         minimum number of ngram tokens to use for ngram-based speculative decoding (default: 48)
 --spec-ngram-mod-n-max                  N
                                         maximum number of ngram tokens to use for ngram-based speculative decoding (default: 64)
+--spec-ngram-mod-size                   MiB
+                                        ngram-mod hash table size in MiB, shared by all slots; it is reset at 25% occupancy (default: 16)
 ```
 
 ### n-gram Simple Parameters

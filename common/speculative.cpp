@@ -1952,6 +1952,10 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
         // consecutive accept rounds with low acceptance fraction (< 0.5)
         int n_low = 0;
+
+        // draft rounds to skip after a low acceptance streak, and how many streaks in a row
+        int n_cooldown = 0;
+        int n_streak   = 0;
     };
 
     std::vector<seq_info> sinfos;
@@ -1961,7 +1965,7 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
             uint32_t n_seq)
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_NGRAM_MOD, n_seq, params.ngram_mod.n_max)
         , params(params.ngram_mod)
-        , mod(params.ngram_mod.n_match, 4*1024*1024)
+        , mod(params.ngram_mod.n_match, (size_t) params.ngram_mod.size_mib*1024*1024/sizeof(common_ngram_mod::entry_t))
         , verbose(std::getenv("LLAMA_TRACE") != nullptr) {
         static_assert(sizeof(llama_token) == sizeof(common_ngram_mod::entry_t));
 
@@ -1984,6 +1988,9 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
         sinfo.i_last = 0;
         sinfo.n_draft_last = 0;
+        sinfo.n_low = 0;
+        sinfo.n_cooldown = 0;
+        sinfo.n_streak = 0;
 
         const size_t n = mod.get_n();
         if (prompt.size() < n) {
@@ -2001,7 +2008,7 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
         constexpr double f_thold = 0.25;
         if (f > f_thold) {
-            SPC_WRN("ngram_mod occupancy %.2f exceeds threshold (%.2f) - resetting\n", f, f_thold);
+            SPC_WRN("ngram_mod occupancy %zu/%zu (%.2f) exceeds threshold (%.2f) - resetting\n", mod.get_used(), mod.size(), f, f_thold);
 
             mod.reset();
         }
@@ -2031,6 +2038,12 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
             }
 
             sinfo.i_last = cur_len - n;
+        }
+
+        // keep indexing, but let the lower priority speculators (e.g. MTP) draft for a while
+        if (sinfo.n_cooldown > 0) {
+            sinfo.n_cooldown--;
+            return;
         }
 
         result.resize(n + params.n_max);
@@ -2094,16 +2107,18 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
             if (f_acc < 0.25) {
                 sinfo.n_low++;
                 if (sinfo.n_low >= 5) {
-                    if (verbose) {
-                        SPC_TRC("low acceptance streak (%d) - resetting ngram_mod\n", sinfo.n_low);
-                    }
-
-                    mod.reset();
+                    // resetting the shared table does not help: the next draft re-adds the whole
+                    // context, so the same stale continuations come back. back off this seq instead
+                    sinfo.n_cooldown = 16 << std::min(sinfo.n_streak, 6);
+                    sinfo.n_streak++;
                     sinfo.n_low = 0;
-                    sinfo.i_last = 0;
+
+                    SPC_WRN("ngram_mod low acceptance streak on seq %d, occupancy %zu/%zu - pausing drafts for %d rounds\n",
+                            seq_id, mod.get_used(), mod.size(), sinfo.n_cooldown);
                 }
             } else {
                 sinfo.n_low = 0;
+                sinfo.n_streak = 0;
             }
         }
     }

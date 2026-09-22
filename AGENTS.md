@@ -279,5 +279,6 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #25592 hybrid/recurrent checkpoint handling - reuse checkpoints across agent turns instead of full re-processing
 - #28702 CUDA fused Q4_K gate/up + SwiGLU MMQ for prefill - +4-11% pp on Qwen3.x-27B Q4_K_M upstream; KLD vs master (-sm tensor, q8_0/q4_0 KV) 0.0098, same class as master -sm layer vs tensor (0.0079): rounding, not corruption
 - local meta/CUDA gate-up alloc dep - keep the FFN input alive for the fused #28702 kernel under -sm tensor and for up-before-gate graphs (Qwen); memory-safety fix, no speed change expected
+- local ngram-mod table size + wipe logging - `--spec-ngram-mod-size` (MiB, default 16 = upstream) so a long-running server keeps more shared history; the occupancy wipe logs a warning; a low-acceptance streak pauses ngram drafts for that slot (16..1024 rounds, MTP drafts meanwhile) instead of wiping the shared table, which the next draft rebuilt from the same context anyway
 
 Benchmark: `scripts/fork/bench_qwen38.py` (A/B vs a master build, see the header of the file).
