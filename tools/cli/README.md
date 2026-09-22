@@ -211,6 +211,7 @@
 | `--spec-ngram-mod-n-min N` | minimum number of ngram tokens to use for ngram-based speculative decoding (default: 48) |
 | `--spec-ngram-mod-n-max N` | maximum number of ngram tokens to use for ngram-based speculative decoding (default: 64) |
 | `--spec-ngram-mod-n-match N` | ngram-mod lookup length (default: 24) |
+| `--spec-ngram-mod-size MiB` | ngram-mod hash table size in MiB, shared by all slots; it is reset at 25% occupancy (default: 16) |
 | `--spec-ngram-simple-size-n N` | ngram size N for ngram-simple speculative decoding, length of lookup n-gram (default: 12) |
 | `--spec-ngram-simple-size-m N` | ngram size M for ngram-simple speculative decoding, length of draft m-gram (default: 48) |
 | `--spec-ngram-simple-min-hits N` | minimum hits for ngram-simple speculative decoding (default: 1) |
