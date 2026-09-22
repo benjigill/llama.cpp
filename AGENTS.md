@@ -265,6 +265,10 @@ Expect every change here to be long-lived. Upstream PRs are slow to merge, so as
 - Development may happen on a machine without CUDA (macOS). Code there, but build and benchmark on the target Linux box before keeping a patch.
 - The upstream contribution rules above still apply if a change is ever proposed upstream: the human writes the PR text, comments and replies.
 
+### No private data in commits
+
+Never commit local usernames, home or mount paths, hostnames, emails, API keys, model file names or launch scripts. Use placeholders (`<model.gguf>`, `build/bin`) in docs and scripts. Benchmark output (`bench-results/`) records local paths and stays untracked. Each clone installs `scripts/fork/leak-check.sh` as its `pre-commit` and `commit-msg` hook (see the header of the script); private patterns go in `.git/info/leak-patterns`.
+
 ### Carried patches
 
 Keep this list current. One line per patch: upstream PR (or `local`), short name, why we carry it.
@@ -274,5 +278,6 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #27694 rejection-sampling verification for MTP - higher draft acceptance at temp > 0; needs `--spec-draft-sampling probabilistic`
 - #25592 hybrid/recurrent checkpoint handling - reuse checkpoints across agent turns instead of full re-processing
 - #28702 CUDA fused Q4_K gate/up + SwiGLU MMQ for prefill - +4-11% pp on Qwen3.x-27B Q4_K_M upstream; KLD vs master (-sm tensor, q8_0/q4_0 KV) 0.0098, same class as master -sm layer vs tensor (0.0079): rounding, not corruption
+- local meta/CUDA gate-up alloc dep - keep the FFN input alive for the fused #28702 kernel under -sm tensor and for up-before-gate graphs (Qwen); memory-safety fix, no speed change expected
 
 Benchmark: `scripts/fork/bench_qwen38.py` (A/B vs a master build, see the header of the file).

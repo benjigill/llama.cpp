@@ -2464,6 +2464,26 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
     return GGML_STATUS_SUCCESS;
 }
 
+// The simple backends only see their per-device graphs at compute time, after the meta graph has been allocated.
+// Fused gate/up + GLU kernels (e.g. CUDA MMQ) still read the shared src1 while writing the GLU output,
+// so keep src1 alive until the GLU node regardless of the gate/up node order.
+static void ggml_backend_meta_graph_optimize(ggml_backend_t backend, ggml_cgraph * cgraph, ggml_backend_graph_optimize_params * params) {
+    GGML_UNUSED(backend);
+    for (int i = 0; i + 2 < cgraph->n_nodes; i++) {
+        ggml_tensor * a   = cgraph->nodes[i];
+        ggml_tensor * b   = cgraph->nodes[i + 1];
+        ggml_tensor * glu = cgraph->nodes[i + 2];
+        if (glu->op != GGML_OP_GLU || a->op != GGML_OP_MUL_MAT || b->op != GGML_OP_MUL_MAT || a->src[1] != b->src[1]) {
+            continue;
+        }
+        if (!((glu->src[0] == a && glu->src[1] == b) || (glu->src[0] == b && glu->src[1] == a))) {
+            continue;
+        }
+        params->add_alloc_dep(params->user_data, a->src[1], glu);
+        i += 2;
+    }
+}
+
 static const ggml_backend_i ggml_backend_meta_i = {
     /* .get_name                = */ ggml_backend_meta_get_name,
     /* .free                    = */ ggml_backend_meta_free,
@@ -2480,7 +2500,7 @@ static const ggml_backend_i ggml_backend_meta_i = {
     /* .graph_compute           = */ ggml_backend_meta_graph_compute,
     /* .event_record            = */ nullptr,
     /* .event_wait              = */ nullptr,
-    /* .graph_optimize          = */ nullptr,
+    /* .graph_optimize          = */ ggml_backend_meta_graph_optimize,
 };
 
 bool ggml_backend_is_meta(ggml_backend_t backend) {
