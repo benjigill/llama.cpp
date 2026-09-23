@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# Give the embedded MTP head of a qwen35 GGUF a trimmed draft vocabulary (d2t).
+# Make a copy of a qwen35 GGUF whose MTP draft step uses a trimmed vocabulary (d2t).
+# Background and usage: scripts/fork/README.md
 #
-# The MTP draft head otherwise multiplies against the full output.weight (~248k rows) for every
-# draft token. This writes a copy of the model with two extra tensors:
+# The MTP layer has no output projection of its own: every draft token multiplies against the main
+# model's full output.weight (~248k rows). This writes a copy of the model with two extra tensors:
 #   d2t                                   I64 [n_draft]       target token id of each draft row
 #   blk.<N>.nextn.shared_head_head.weight [n_embd, n_draft]   those rows of output.weight, copied byte
 #                                                             for byte (same quant type, no requant)

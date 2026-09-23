@@ -289,6 +289,8 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #29143 d2t draft vocab for MTP sidecars - base for the local embedded trim below
 - local embedded MTP d2t trim - the MTP draft head uses a trimmed `nextn.shared_head_head` (d2t rows of output.weight) instead of the full ~248k-row output.weight; needs a model copy made by `scripts/fork/mtp-d2t.py`, without it nothing changes
 
+Fork scripts and the manual steps they need (ngram-mod table, trimmed MTP draft vocab): `scripts/fork/README.md`.
+
 Benchmark: `scripts/fork/bench_qwen38.py` (A/B vs a master build, see the header of the file).
 
 Backlog and outcomes of candidate improvements: `IMPROVEMENT_LEDGER.md`.
