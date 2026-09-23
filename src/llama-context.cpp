@@ -2807,9 +2807,17 @@ private:
     std::vector<uint8_t> temp_buffer;
 };
 
+// whole-row views keep the split state of tensors that the meta backend splits by rows (-sm tensor)
+static ggml_tensor * llama_io_view(ggml_context * ctx, ggml_tensor * t, size_t offset, size_t size) {
+    if (ggml_is_contiguous(t) && offset % t->nb[1] == 0 && size % t->nb[1] == 0) {
+        return ggml_view_2d(ctx, t, t->ne[0], size/t->nb[1], t->nb[1], offset);
+    }
+    return ggml_view_1d(ctx, t, size/ggml_element_size(t), offset);
+}
+
 class llama_io_write_device : public llama_io_write_i {
 public:
-    llama_io_write_device(uint8_t * p, size_t len, llama_memory_buffers & mbufs) : ptr(p), buf_size(len), mbufs(mbufs)  {
+    llama_io_write_device(uint8_t * p, size_t len, llama_memory_buffers & mbufs, bool meta) : ptr(p), buf_size(len), mbufs(mbufs), meta(meta)  {
     }
 
     ~llama_io_write_device() {
@@ -2824,12 +2832,14 @@ public:
 
         for (auto & [buft, mbuf] : mbufs_new) {
             ggml_init_params params = {
-                /*.mem_size   =*/ 2*mbuf.n_tensors*ggml_tensor_overhead(),
+                /*.mem_size   =*/ mbuf.n_tensors*ggml_tensor_overhead(),
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
             };
 
+            // separate contexts: a meta buffer type allocates every tensor of the context, views too
             mbuf.ctx.reset(ggml_init(params));
+            mbuf.ctx_org.reset(ggml_init(params));
 
             mbuf.org.reserve(mbuf.n_tensors);
             mbuf.cpy.reserve(mbuf.n_tensors);
@@ -2838,12 +2848,17 @@ public:
         for (const auto & winfo : winfos) {
             auto * buft = ggml_backend_buffer_get_type(winfo.tensor->buffer);
 
-            const int64_t n = winfo.size/ggml_element_size(winfo.tensor);
-
             auto & mbuf = mbufs_new[buft];
 
-            mbuf.org.push_back(ggml_view_1d      (mbuf.ctx.get(), winfo.tensor, n, winfo.offset));
-            mbuf.cpy.push_back(ggml_new_tensor_1d(mbuf.ctx.get(), winfo.tensor->type, n));
+            ggml_tensor * org = llama_io_view(mbuf.ctx_org.get(), winfo.tensor, winfo.offset, winfo.size);
+            ggml_backend_view_init(org);
+
+            // the meta backend picks the split of a new tensor by its name
+            ggml_tensor * cpy = ggml_new_tensor(mbuf.ctx.get(), org->type, GGML_MAX_DIMS, org->ne);
+            ggml_set_name(cpy, winfo.tensor->name);
+
+            mbuf.org.push_back(org);
+            mbuf.cpy.push_back(cpy);
         }
 
         for (auto & [buft, mbuf] : mbufs_new) {
@@ -2873,7 +2888,7 @@ public:
             }
 
             if (need_alloc) {
-                if (!mbuf_cur.buf || mbuf_cur.total_size != mbuf.total_size) {
+                if (!mbuf_cur.buf || mbuf_cur.total_size != mbuf.total_size || meta) {
                     mbuf_cur = std::move(mbuf);
 
                     mbuf_cur.buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(mbuf_cur.ctx.get(), buft));
@@ -2890,7 +2905,6 @@ public:
                     ggml_tallocr talloc = ggml_tallocr_new(buf.get());
 
                     for (size_t i = 0; i < mbuf_cur.org.size(); ++i) {
-                        ggml_backend_view_init(mbuf_cur.org[i]);
                         ggml_tallocr_alloc(&talloc, mbuf_cur.cpy[i]);
                     }
 
@@ -2898,8 +2912,10 @@ public:
                 }
             }
 
-            for (size_t i = 0; i < mbuf_cur.org.size(); ++i) {
-                ggml_backend_tensor_copy(mbuf_cur.org[i], mbuf_cur.cpy[i]);
+            // copy from the views of this call: under the meta backend, views of an earlier call can be stale
+            const auto & org = need_alloc ? mbuf_cur.org : mbuf.org;
+            for (size_t i = 0; i < org.size(); ++i) {
+                ggml_backend_tensor_copy(org[i], mbuf_cur.cpy[i]);
             }
         }
     }
@@ -2937,6 +2953,8 @@ private:
     std::vector<write_info> winfos;
 
     llama_memory_buffers & mbufs;
+
+    const bool meta;
 };
 
 class llama_io_read_device : public llama_io_read_i {
@@ -2969,11 +2987,9 @@ public:
         for (const auto & rinfo : rinfos) {
             auto * buft = ggml_backend_buffer_get_type(rinfo.tensor->buffer);
 
-            const int64_t n = rinfo.size/ggml_element_size(rinfo.tensor);
-
             auto & mbuf = mbufs_new[buft];
 
-            mbuf.org.push_back(ggml_view_1d(mbuf.ctx.get(), rinfo.tensor, n, rinfo.offset));
+            mbuf.org.push_back(llama_io_view(mbuf.ctx.get(), rinfo.tensor, rinfo.offset, rinfo.size));
 
             ggml_backend_view_init(mbuf.org.back());
         }
@@ -3157,7 +3173,7 @@ size_t llama_context::state_seq_get_size(llama_seq_id seq_id, llama_state_seq_fl
 size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, size_t size, llama_state_seq_flags flags) {
     std::unique_ptr<llama_io_write_i> io;
     if (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) {
-        io = std::make_unique<llama_io_write_device>(dst, size, mem_storage[seq_id]);
+        io = std::make_unique<llama_io_write_device>(dst, size, mem_storage[seq_id], model.split_mode() == LLAMA_SPLIT_MODE_TENSOR);
     } else {
         io = std::make_unique<llama_io_write_host>(dst, size);
     }
