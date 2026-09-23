@@ -175,6 +175,14 @@ Some characteristics:
 
 Currently, a single hash pool is shared across all server slots, so different requests can benefit from each other.
 
+Each cell also keeps a 32-bit fingerprint of its n-gram, so a lookup that lands on another n-gram's bucket drafts nothing instead of a wrong token; a full bucket is simply overwritten. With `--spec-ngram-mod-file` the pool survives restarts, and it can be primed from a corpus (repos, transcripts rendered with the chat template):
+
+```
+python3 scripts/fork/ngram-corpus.py -o corpus.txt --repo <repo> --chat <runs.jsonl> --server http://127.0.0.1:8080
+build/bin/llama-ngram-mod-build -m <model.gguf> -o <table.bin> --size 4096 corpus.txt
+llama-server ... --spec-type ngram-mod --spec-ngram-mod-file <table.bin>
+```
+
 **Sample usage:**
 
 ```
@@ -321,7 +329,9 @@ Use exactly one of these options:
 --spec-ngram-mod-n-max                  N
                                         maximum number of ngram tokens to use for ngram-based speculative decoding (default: 64)
 --spec-ngram-mod-size                   MiB
-                                        ngram-mod hash table size in MiB, shared by all slots; it is reset at 25% occupancy (default: 16)
+                                        ngram-mod hash table size in MiB (8 bytes per n-gram), shared by all slots; a new n-gram replaces the old one in its bucket (default: 16)
+--spec-ngram-mod-file                   FNAME
+                                        ngram-mod table file: loaded on start (its size overrides --spec-ngram-mod-size), saved on shutdown; build or extend one from a text corpus with llama-ngram-mod-build (default: none, in memory only)
 ```
 
 ### n-gram Simple Parameters

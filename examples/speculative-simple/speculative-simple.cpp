@@ -116,6 +116,7 @@ int main(int argc, char ** argv) {
     // init the speculator
     const auto & params_spec = params.speculative;
 
+    params.speculative.ngram_mod.n_vocab = llama_vocab_n_tokens(vocab);
     struct common_speculative * spec = common_speculative_init(params.speculative, 1);
 
     if (spec == nullptr) {
