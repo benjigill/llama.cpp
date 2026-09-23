@@ -106,12 +106,27 @@ def run_batched(a, out):
 # server-level
 
 
+def merge_args(base, extra):
+    # a flag in extra replaces the same flag (and its value) in base, so the command line shows what runs
+    # note: aliases (e.g. -c vs --ctx-size) are not matched
+    flags = {t for t in extra if t.startswith("-")}
+    out, i = [], 0
+    while i < len(base):
+        has_val = i + 1 < len(base) and not base[i + 1].startswith("-")
+        if base[i] in flags:
+            i += 2 if has_val else 1
+            continue
+        out.append(base[i])
+        i += 1
+    return out + extra
+
+
 class Server:
     def __init__(self, a, out, name, extra):
         self.cmd = [str(Path(a.bin) / "llama-server"), "--model", a.model, "--host", "127.0.0.1", "--port", str(PORT)]
         if a.mmproj:
             self.cmd += ["--mmproj", a.mmproj]
-        self.cmd += SERVER_ARGS + extra
+        self.cmd += merge_args(SERVER_ARGS, extra)
         self.logf = open(out / f"server-{name}.log", "w")
 
     def __enter__(self):
