@@ -6,7 +6,7 @@ Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
 
 ## Backlog
 
-### 1. Cheaper MTP draft head via a trimmed draft vocabulary (upstream #29143 + local) - in progress
+### 1. Cheaper MTP draft head via a trimmed draft vocabulary (upstream #29143 + local) - done (opt-in: needs the d2t model copy)
 
 - Each MTP draft token runs the full-vocab LM head (`src/models/qwen35.cpp`, `graph_mtp`), about 248k rows, around 3 times per round. The head is likely the largest part of a draft step (one transformer layer + head).
 - #29143 (+90/-8, qwen35 only) adds `d2t` (draft-to-target) support: a head of `n_draft_vocab` rows whose logits are scattered onto a `-inf` full-vocab tensor.
@@ -16,6 +16,13 @@ Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
 - Applied (branch `feat/mtp-ubatch-dvocab-cache`): #29143 only covers MTP sidecars (`mtp_only`), and Qwen3.x GGUFs have no `nextn.shared_head_head` (the draft uses `output.weight`), so a local commit loads `d2t` + a trimmed `nextn.shared_head_head` next to the trunk. `scripts/fork/mtp-d2t.py` writes the model copy (rows copied byte for byte from `output.weight`). Checked on a random fixture: kept logits match the full head exactly.
 - Estimate: at n_embd 5120, a Q6_K head of 248k rows is ~1 GB read per draft token vs ~0.3 GB for the MTP block, so the head is ~75% of a draft step; 32k rows cut it to ~0.13 GB. Confirm with the A/B below.
 - To measure: build the copy (`--n-draft 32768`, `--table` from the ngram-mod file), then A/B the same build on the original vs the d2t GGUF (decode + parallel suites); watch MTP acceptance, it should barely move.
+- Result (same build, original vs d2t copy, `--n-draft 32768`, decode suite): tg +1.8 to +2.6% greedy, +1.9 to +5.2% probabilistic, i.e. about +2-5%. MTP acceptance -1 to -5% relative (e.g. greedy edit 0.44 -> 0.42), within a few hundredths and partly noise.
+  | | tg base | tg d2t | accept base | accept d2t |
+  | --- | --- | --- | --- | --- |
+  | greedy edit / write / prose | 73.45 / 68.68 / 62.32 | 75.08 / 69.91 / 63.92 | 0.44 / 0.38 / 0.31 | 0.42 / 0.36 / 0.30 |
+  | probabilistic edit / write / prose | 84.82 / 76.04 / 75.71 | 86.46 / 80.01 / 78.50 | 0.56 / 0.45 / 0.46 | 0.54 / 0.46 / 0.45 |
+- Smaller than the 5-10% estimate: the draft steps are a small part of a round next to the 27B verify step, and the slightly lower acceptance gives some of it back.
+- Next: rebuild the copy with `--table` from the production ngram-mod file (and/or `--corpus`) and try `--n-draft 49152`, to see whether acceptance comes back to base while keeping the speedup.
 
 ### 2. Row-per-warp GATED_DELTA_NET decode kernel (upstream #22587) - todo
 
