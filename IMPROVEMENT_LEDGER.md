@@ -36,7 +36,7 @@ Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
 - Hits all 48 GDN layers on every decode and verify step, and the recurrent tail of our chunked split path.
 - Conflicts with the local chunked-GDN-with-snapshots patch in `ggml/src/ggml-cuda/gated_delta_net.cu`; re-run `test-backend-ops -o GATED_DELTA_NET` and `-o GATED_DELTA_NET_CACHE_FUSION`.
 
-### 3. Serialize MTP multi-ubatch decode (upstream #26827) - in progress
+### 3. Serialize MTP multi-ubatch decode (upstream #26827) - done
 
 - Stability. With MTP and tensor split on two GPUs, prefills of 100k+ tokens locked the whole host: MTP draft catch-up queued two graphs against the same KV cache without waiting.
 - We run 150k tokens per slot, so this is reachable.
@@ -51,11 +51,12 @@ Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
 - Prime it from a corpus (repos, automation transcripts rendered with the chat template), tokenized with the model's vocab.
 - Target: repeated automations (same MCP calls, same ledger/report edits) draft long accepted runs from the first request after a restart.
 
-### 5. Share checkpoint buffers in the prompt cache (upstream #27451) - in progress
+### 5. Share checkpoint buffers in the prompt cache (upstream #27451) - done
 
 - Saving a prompt to the RAM cache deep-copies every context checkpoint, so memory briefly doubles. With 150k-token slots and hybrid checkpoints this can hit `--cache-ram`, and a failed allocation silently cuts the limit to 40%.
 - Shares the checkpoint buffers (refcounted) and handles `bad_alloc` for the whole entry. +56/-18.
 - Applied (branch `feat/mtp-ubatch-dvocab-cache`), with a local fix: upstream allocates a fresh zeroed buffer for every checkpoint update, including the per-round speculative checkpoint (ngram drafts longer than n_rs_seq); an unshared buffer is now resized in place as before.
+- Result (with #26827, `cache` suite, branch vs master build): prompt tokens re-processed identical (warm 18/16/17, multi-turn 26/22); cold TTFT 19.72 -> 19.89 s (+0.9%), multi-turn TTFT 0.52 -> 0.54 / 0.52 -> 0.52 s, single samples, noise. No regression. The suite does not reach the cases these fix (100k+ MTP prefills under -sm tensor; `--cache-ram` near its limit), so there is no gain to show either. Branch side ran on the d2t copy, which only changes draft steps.
 - Later: #28092 `--cache-disk` (persistent prompt cache across restarts, +1706 lines); wait for it to settle upstream.
 
 ## Considered, not now
