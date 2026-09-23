@@ -286,3 +286,5 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - local ngram-mod fingerprinted, persistent table - each cell keeps a 32-bit fingerprint of its n-gram, so a bucket hit by another n-gram drafts nothing instead of a wrong token and the 25% occupancy wipe is gone (full buckets are overwritten); `--spec-ngram-mod-file` loads the table on start and saves it on shutdown/sleep; `llama-ngram-mod-build` + `scripts/fork/ngram-corpus.py` prime it from repos and chat transcripts, so repeated automations draft long runs right after a restart
 
 Benchmark: `scripts/fork/bench_qwen38.py` (A/B vs a master build, see the header of the file).
+
+Backlog and outcomes of candidate improvements: `IMPROVEMENT_LEDGER.md`.
