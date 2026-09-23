@@ -46,6 +46,18 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
                 __func__, (long long) n_vocab_out);
     }
 
+    // local: embedded MTP with a trimmed head (scripts/fork/mtp-d2t.py) - the target keeps the full output
+    // head, only nextn.shared_head_head has the d2t rows
+    int64_t n_vocab_mtp = n_vocab_out;
+    if (!mtp_only && d2t_meta) {
+        n_vocab_mtp = d2t_meta->ne[0];
+        d2t = create_tensor(tn(LLM_TENSOR_D2T), { n_vocab_mtp }, mtp_flags);
+        if (d2t) {
+            LLAMA_LOG_INFO("%s: QWEN35 MTP using d2t draft-vocab trim of the embedded head (n_vocab_mtp = %lld)\n",
+                    __func__, (long long) n_vocab_mtp);
+        }
+    }
+
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
 
     // output
@@ -122,7 +134,7 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", il), { n_embd },              mtp_flags);
         layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", il), { n_embd },              mtp_flags);
         layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", il), { n_embd, n_vocab },     mtp_flags|TENSOR_NOT_REQUIRED);
-        layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", il), { n_embd, n_vocab_out }, mtp_flags|TENSOR_NOT_REQUIRED);
+        layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", il), { n_embd, n_vocab_mtp }, mtp_flags|TENSOR_NOT_REQUIRED);
         layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", il), { n_embd },              mtp_flags|TENSOR_NOT_REQUIRED);
     };
 
@@ -142,6 +154,12 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
             }
         }
         GGML_ASSERT(has_valid_head && "d2t draft-vocab trim requires output.weight or nextn.shared_head_head");
+    }
+
+    if (d2t && !mtp_only) {
+        for (int i = n_layer; i < n_layer_all; ++i) {
+            GGML_ASSERT(layers[i].nextn.shared_head_head && "embedded d2t draft-vocab trim requires nextn.shared_head_head");
+        }
     }
 }
 
