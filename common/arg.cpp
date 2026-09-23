@@ -4298,12 +4298,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--spec-ngram-mod-size"}, "MiB",
-        string_format("ngram-mod hash table size in MiB, shared by all slots; it is reset at 25%% occupancy (default: %d)", params.speculative.ngram_mod.size_mib),
+        string_format("ngram-mod hash table size in MiB (8 bytes per n-gram), shared by all slots; a new n-gram replaces the old one in its bucket (default: %d)", params.speculative.ngram_mod.size_mib),
         [](common_params & params, int value) {
             if (value < 1 || value > 16384) {
                 throw std::invalid_argument("ngram-mod size must be between 1 and 16384 MiB inclusive");
             }
             params.speculative.ngram_mod.size_mib = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-ngram-mod-file"}, "FNAME",
+        "ngram-mod table file: loaded on start (its size overrides --spec-ngram-mod-size), saved on shutdown; "
+        "build or extend one from a text corpus with llama-ngram-mod-build (default: none, in memory only)",
+        [](common_params & params, const std::string & value) {
+            params.speculative.ngram_mod.path = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 

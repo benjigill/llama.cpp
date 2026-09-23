@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iomanip>
 #include <map>
@@ -1965,7 +1966,7 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
             uint32_t n_seq)
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_NGRAM_MOD, n_seq, params.ngram_mod.n_max)
         , params(params.ngram_mod)
-        , mod(params.ngram_mod.n_match, (size_t) params.ngram_mod.size_mib*1024*1024/sizeof(common_ngram_mod::entry_t))
+        , mod(params.ngram_mod.n_match, (size_t) params.ngram_mod.size_mib*1024*1024/sizeof(common_ngram_mod::cell_t))
         , verbose(std::getenv("LLAMA_TRACE") != nullptr) {
         static_assert(sizeof(llama_token) == sizeof(common_ngram_mod::entry_t));
 
@@ -1981,6 +1982,61 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
         }
 
         sinfos.resize(n_seq);
+
+        load();
+    }
+
+    ~common_speculative_impl_ngram_mod() override {
+        save();
+    }
+
+    // table file (--spec-ngram-mod-file): a missing file starts empty and is created on shutdown;
+    // a file that does not fit this model is left alone and not overwritten
+    void load() {
+        if (params.path.empty()) {
+            return;
+        }
+
+        if (FILE * f = std::fopen(params.path.c_str(), "rb")) {
+            std::fclose(f);
+        } else {
+            SPC_INF("ngram_mod table %s does not exist yet, starting empty\n", params.path.c_str());
+            return;
+        }
+
+        const int64_t t_start = ggml_time_us();
+
+        std::string err;
+        if (!mod.load(params.path, params.n_vocab, err)) {
+            SPC_WRN("ngram_mod table not loaded: %s - using an empty table and not saving it\n", err.c_str());
+            params.path.clear();
+            return;
+        }
+
+        SPC_INF("ngram_mod table loaded from %s: %zu/%zu cells used (%.1f MiB) in %.2f s\n",
+                params.path.c_str(), mod.get_used(), mod.size(), mod.size_bytes()/1024.0/1024.0, (ggml_time_us() - t_start)/1e6);
+
+        if (mod.size() != (size_t) params.size_mib*1024*1024/sizeof(common_ngram_mod::cell_t)) {
+            SPC_WRN("ngram_mod table size is taken from the file (%.1f MiB), --spec-ngram-mod-size %d is ignored\n",
+                    mod.size_bytes()/1024.0/1024.0, params.size_mib);
+        }
+    }
+
+    void save() const {
+        if (params.path.empty()) {
+            return;
+        }
+
+        const int64_t t_start = ggml_time_us();
+
+        std::string err;
+        if (!mod.save(params.path, params.n_vocab, err)) {
+            SPC_ERR("ngram_mod table not saved: %s\n", err.c_str());
+            return;
+        }
+
+        SPC_INF("ngram_mod table saved to %s: %zu/%zu cells used in %.2f s\n",
+                params.path.c_str(), mod.get_used(), mod.size(), (ggml_time_us() - t_start)/1e6);
     }
 
     void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
@@ -2003,15 +2059,10 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
         sinfo.i_last = prompt.size() - n;
 
+        // no reset on high occupancy: the cell fingerprints reject lookups that hit another n-gram,
+        // and a new n-gram overwrites the old one in its bucket
         const double f = (double)mod.get_used() / (double)mod.size();
         SPC_TRC("ngram_mod occupancy = %zu/%zu (%.2f)\n", mod.get_used(), mod.size(), f);
-
-        constexpr double f_thold = 0.25;
-        if (f > f_thold) {
-            SPC_WRN("ngram_mod occupancy %zu/%zu (%.2f) exceeds threshold (%.2f) - resetting\n", mod.get_used(), mod.size(), f, f_thold);
-
-            mod.reset();
-        }
     }
 
     void draft_one(

@@ -357,7 +357,10 @@ struct common_params_speculative_ngram_mod {
     int32_t n_max = 64;
     int32_t n_min = 48;
 
-    int32_t size_mib = 16; // hash table size in MiB (4-byte entries)
+    int32_t size_mib = 16; // hash table size in MiB (8-byte cells)
+
+    std::string path;        // table file: loaded on start, saved on shutdown (empty = in memory only)
+    uint32_t    n_vocab = 0; // set by the caller from the target model, guards loading a table of another model
 };
 
 struct common_params_speculative_ngram_map {
