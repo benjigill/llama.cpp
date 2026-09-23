@@ -33,6 +33,7 @@ struct llama_memory_buffer {
     ggml_backend_buffer_ptr buf;
 
     ggml_context_ptr ctx;
+    ggml_context_ptr ctx_org; // views of the source tensors
 
     std::vector<ggml_tensor *> org;
     std::vector<ggml_tensor *> cpy;

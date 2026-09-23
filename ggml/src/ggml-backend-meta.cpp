@@ -1641,6 +1641,39 @@ static void ggml_backend_meta_buffer_get_tensor(ggml_backend_buffer_t buffer, co
     }
 }
 
+static bool ggml_backend_meta_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {
+    if (!ggml_backend_buffer_is_meta(src->buffer)) {
+        return false;
+    }
+    const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(buffer);
+    if (ggml_backend_meta_buffer_n_bufs(src->buffer) != n_bufs) {
+        return false;
+    }
+
+    // copy slice by slice on each device, only if both tensors are split the same way
+    const ggml_backend_meta_split_state ss_src = ggml_backend_meta_get_split_state(src, /*assume_sync =*/ false);
+    const ggml_backend_meta_split_state ss_dst = ggml_backend_meta_get_split_state(dst, /*assume_sync =*/ false);
+    if (ss_src.axis != ss_dst.axis) {
+        return false;
+    }
+    for (size_t j = 0; j < n_bufs; j++) {
+        const ggml_tensor * src_j = ggml_backend_meta_buffer_simple_tensor(src, j);
+        const ggml_tensor * dst_j = ggml_backend_meta_buffer_simple_tensor(dst, j);
+        if (src_j == nullptr || dst_j == nullptr || !ggml_are_same_layout(src_j, dst_j)) {
+            return false;
+        }
+    }
+
+    for (size_t j = 0; j < n_bufs; j++) {
+        ggml_tensor * src_j = ggml_backend_meta_buffer_simple_tensor(src, j);
+        ggml_tensor * dst_j = ggml_backend_meta_buffer_simple_tensor(dst, j);
+        if (ggml_nbytes(src_j) > 0) {
+            ggml_backend_tensor_copy(src_j, dst_j);
+        }
+    }
+    return true;
+}
+
 static void ggml_backend_meta_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     const size_t n_buffers = ggml_backend_meta_buffer_n_bufs(buffer);
     for (size_t i = 0; i < n_buffers; i++) {
@@ -1665,7 +1698,7 @@ static const ggml_backend_buffer_i ggml_backend_meta_buffer_iface = {
     /* .get_tensor      = */ ggml_backend_meta_buffer_get_tensor,
     /* .set_tensor_2d   = */ nullptr,
     /* .get_tensor_2d   = */ nullptr,
-    /* .cpy_tensor      = */ nullptr,
+    /* .cpy_tensor      = */ ggml_backend_meta_buffer_cpy_tensor,
     /* .clear           = */ ggml_backend_meta_buffer_clear,
     /* .reset           = */ ggml_backend_meta_buffer_reset,
 };
