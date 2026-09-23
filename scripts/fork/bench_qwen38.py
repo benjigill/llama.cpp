@@ -226,12 +226,12 @@ def test_decode(a, out, name, extra):
     return res
 
 
-def test_cache(a, out):
+def test_cache(a, out, extra):
     # automations: same long system prompt, different user turns; then an agent-style follow-up
     # that drops the reasoning of the previous reply (the case that used to force re-processing)
     sp = system_prompt(a.sys_chars)
     res = {}
-    with Server(a, out, "cache", []):
+    with Server(a, out, "cache", extra):
         cold = chat([{"role": "system", "content": sp}, {"role": "user", "content": "Summarize llama_context::decode in 3 bullets."}], 256, 1)
         res["cold"] = cold
         warm = []
@@ -291,7 +291,7 @@ def cmd_run(a):
         run_batched(a, out)
     if "cache" in suites:
         log("== prompt cache")
-        (out / "cache.json").write_text(json.dumps(test_cache(a, out), indent=1))
+        (out / "cache.json").write_text(json.dumps(test_cache(a, out, extra), indent=1))
     if "decode" in suites:
         log("== decode (spec greedy)")
         res = {"greedy": test_decode(a, out, "greedy", extra)}

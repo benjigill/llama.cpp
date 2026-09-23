@@ -284,5 +284,13 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #26001 CUDA chunked GDN prefill - tensor-core chunked kernel for the 48 GDN layers, +10-19% pp upstream on Qwen3.x-27B Q4_K_M; upstream only takes it for K == 1 (no rollback snapshots)
 - local chunked GDN with rollback snapshots - with MTP the target keeps n_rs_seq snapshots (K = n_rs_seq + 1), so #26001 alone never runs in our server; run the chunked kernel on the first n_tokens - (K - 1) tokens straight into snapshot slot K-1 and the recurrent kernel on the last K - 1 tokens, keeping the cache-copy fusion
 - local ngram-mod fingerprinted, persistent table - each cell keeps a 32-bit fingerprint of its n-gram, so a bucket hit by another n-gram drafts nothing instead of a wrong token and the 25% occupancy wipe is gone (full buckets are overwritten); `--spec-ngram-mod-file` loads the table on start and saves it on shutdown/sleep; `llama-ngram-mod-build` + `scripts/fork/ngram-corpus.py` prime it from repos and chat transcripts, so repeated automations draft long runs right after a restart
+- #26827 serialize MTP multi-ubatch decode - with -sm tensor, MTP catch-up after 100k+ token prefills queued ubatches against the same KV cache and could lock the host; the upstream test is pinned to the CPU backend here (it needs the abort callback)
+- #27451 shared prompt-cache checkpoints - saving a slot to `--cache-ram` no longer deep-copies its checkpoints, and a bad_alloc skips caching instead of aborting; locally, an unshared checkpoint buffer is resized in place so per-round speculative checkpoints do not reallocate
+- #29143 d2t draft vocab for MTP sidecars - base for the local embedded trim below
+- local embedded MTP d2t trim - the MTP draft head uses a trimmed `nextn.shared_head_head` (d2t rows of output.weight) instead of the full ~248k-row output.weight; needs a model copy made by `scripts/fork/mtp-d2t.py`, without it nothing changes; tg +2-8% (49k draft vocab, probabilistic), MTP acceptance within a few hundredths
+
+Fork scripts and the manual steps they need (ngram-mod table, trimmed MTP draft vocab): `scripts/fork/README.md`.
 
 Benchmark: `scripts/fork/bench_qwen38.py` (A/B vs a master build, see the header of the file).
+
+Backlog and outcomes of candidate improvements: `IMPROVEMENT_LEDGER.md`.
