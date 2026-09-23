@@ -2810,8 +2810,8 @@ static int ggml_cuda_try_gdn_cache_fusion(
     }
 
     // Chunked prefill writes state to dst; it cannot scatter into the snapshot cache, so skip fusion.
-    // Decode and fallback recurrent (T < 128) do fuse.
-    if (ggml_cuda_should_use_chunked_gdn(gdn)) {
+    // Decode and fallback recurrent (T < 128) do fuse. With K > 1 the recurrent tail writes the cache.
+    if (ggml_cuda_should_use_chunked_gdn(gdn) && ggml_get_op_params_i32(gdn, 0) == 1) {
         return 0;
     }
 

@@ -244,16 +244,16 @@ bool ggml_cuda_gdn_chunked_shape_eligible(const ggml_tensor * dst) {
     const bool    kda      = (src_g->ne[0] == S_v);
     const int     K        = ggml_get_op_params_i32(dst, 0);
 
-    // - not KDA; K == 1 (final state only)
+    // - not KDA; K > 1 runs chunked on the first n_tokens - (K - 1) tokens and recurrent on the rest
     // - Q/K/G/beta/state must be contiguous; V must be contiguous within each token (nb[0]/nb[1]
     //   packed) and packed across sequences (nb[3] == n_tokens*nb[2]), with an arbitrary per-token
     //   stride nb[2] (fused QKV view). The nb[3] check matches the chunked-entry assert: without it a
     //   view with inter-sequence padding would pass dispatch and then read the wrong batch slice.
-    // - 128-wide heads, GQA-aligned head counts, n_tokens >= 128
-    return !kda && K == 1
+    // - 128-wide heads, GQA-aligned head counts, n_tokens - (K - 1) >= 128
+    return !kda && K >= 1
         && neq0 == 128 && S_v == 128 && nev1 % neq1 == 0
         && src_k->ne[1] == neq1
-        && n_tokens >= 128
+        && n_tokens - (K - 1) >= 128
         && ggml_is_contiguous(src_q) && ggml_is_contiguous(src_k) && ggml_is_contiguous(src_g)
         && src_v->nb[0] == ggml_type_size(src_v->type) && src_v->nb[1] == (size_t)S_v * ggml_type_size(src_v->type)
         && src_v->nb[3] == (size_t) n_tokens * src_v->nb[2]
@@ -347,7 +347,8 @@ static void ggml_cuda_op_gated_delta_net_impl(
     // Passes cache so the kernel can write the final state directly to the fused destination
     // (cache->data). Scratch lives in dst's own allocation, so its address is stable across CUDA
     // graph capture and replay.
-    if (ggml_cuda_should_use_chunked_gdn(dst)) {
+    const bool use_chunked = ggml_cuda_should_use_chunked_gdn(dst);
+    if (use_chunked && !keep_rs) {
         ggml_cuda_op_gated_delta_net_chunked(ctx, dst, cache);
         return;
     }
@@ -358,6 +359,36 @@ static void ggml_cuda_op_gated_delta_net_impl(
     if (cache != nullptr) {
         state_d           = cache->data;
         state_slot_stride = cache->slot_stride;
+    }
+
+    if (use_chunked) {
+        // slot s holds the state s tokens before the end, so the chunked prefix writes slot K-1
+        // and the recurrent kernel continues from it, filling slots K-2..0
+        const int64_t n_pre = n_tokens - (K - 1);
+        const int64_t D     = S_v * S_v * H;
+
+        for (int64_t i3 = 0; i3 < n_seqs; ++i3) {
+            const int64_t iq3 = i3 / rq3;
+
+            const float * q_s = q_d + iq3*sq3;
+            const float * k_s = k_d + iq3*sq3;
+            const float * v_s = v_d + i3*sv3;
+            const float * g_s = g_d + i3*sb3;
+            const float * b_s = b_d + i3*sb3;
+            float * out_s     = dst_d + i3*n_tokens*H*S_v;
+            float * slot_last = state_d + (K - 1)*state_slot_stride + i3*D;
+
+            ggml_cuda_op_gated_delta_net_chunked_impl(ctx, dst, out_s, slot_last,
+                1, n_pre, H, neqk1, S_v, S_v, (n_pre + 15)/16,
+                q_s, k_s, v_s, g_s, b_s, s_d + i3*D, scale, sv2, stream);
+
+            launch_gated_delta_net<false, true>(
+                q_s + n_pre*sq2, k_s + n_pre*sq2, v_s + n_pre*sv2, g_s + n_pre*sb2, b_s + n_pre*sb2,
+                slot_last, out_s + n_pre*H*S_v, state_d + i3*D,
+                S_v, H, K - 1, 1, sq1, sq2, sq3, sv1, sv2, sv3,
+                sb1, sb2, sb3, neqk1, 1, scale, state_slot_stride, K - 1, stream);
+        }
+        return;
     }
 
     if (kda) {

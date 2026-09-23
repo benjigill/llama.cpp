@@ -679,25 +679,26 @@ size_t ggml_cuda_gdn_get_alloc_size(const ggml_tensor * dst) {
 
 // Launches the three-stage pipeline. CS/BK are hardwired to 16/128 (eligibility guarantees
 // k_dim==128; partial final chunks are handled via valid_cs in the kernels).
-static void ggml_cuda_op_gated_delta_net_chunked_impl(ggml_backend_cuda_context &                   ctx,
-                                                      ggml_tensor *                                 dst,
-                                                      const ggml_cuda_gated_delta_net_fused_cache * cache,
-                                                      const int                   B,
-                                                      const int                   T,
-                                                      const int                   H,
-                                                      const int                   num_k_heads,
-                                                      const int                   k_dim,
-                                                      const int                   v_dim,
-                                                      const int                   num_chunks,
-                                                      const float *               q_in,
-                                                      const float *               k_in,
-                                                      const float *               v_in,
-                                                      const float *               g_in,
-                                                      const float *               b_in,
-                                                      const float *               s_d,
-                                                      const float                 scale,
-                                                      const long long             v_tok_stride,
-                                                      const cudaStream_t          stream) {
+void ggml_cuda_op_gated_delta_net_chunked_impl(ggml_backend_cuda_context & ctx,
+                                               const ggml_tensor *         dst,
+                                               float *                     out,
+                                               float *                     state_dst,
+                                               const int                   B,
+                                               const int                   T,
+                                               const int                   H,
+                                               const int                   num_k_heads,
+                                               const int                   k_dim,
+                                               const int                   v_dim,
+                                               const int                   num_chunks,
+                                               const float *               q_in,
+                                               const float *               k_in,
+                                               const float *               v_in,
+                                               const float *               g_in,
+                                               const float *               b_in,
+                                               const float *               s_d,
+                                               const float                 scale,
+                                               const long long             v_tok_stride,
+                                               const cudaStream_t          stream) {
     constexpr int CS = 16;
 
     // Scratch lives in the tail of dst's own allocation; see ggml_cuda_gdn_get_chunked_scratch.
@@ -726,10 +727,6 @@ static void ggml_cuda_op_gated_delta_net_chunked_impl(ggml_backend_cuda_context 
 
     // Stage 3 -- state+output pass: WMMA tensor cores, fixed tile (BV=32/NT=256/OCC=4). ~30 KB
     // dynamic SMEM, under the 48 KB default, so no cudaFuncAttribute opt-in needed.
-    // When fusing with the state cache copy (cache != nullptr), write the final state directly to
-    // the cache pointer instead of the default tail of dst->data.
-    const int64_t state_offset = (int64_t) v_dim * H * T * B;
-    float *       state_dst    = (cache != nullptr) ? cache->data : (float *) dst->data + state_offset;
     {
         constexpr int    BV = 32, NT = 256, OCC = 4;
         constexpr size_t st_smem = cgdr_smem_state_wmma(CS, 128, BV);
@@ -742,7 +739,7 @@ static void ggml_cuda_op_gated_delta_net_chunked_impl(ggml_backend_cuda_context 
         const dim3 state_block(NT);
 #endif
         cgdr_state_wmma_kernel<CS, 128, BV, NT, OCC><<<state_grid, state_block, st_smem, stream>>>(
-            scratch.v_corr, scratch.k_cumdecay, k_in, q_in, scratch.g_cum, scratch.qk, (float *) dst->data,
+            scratch.v_corr, scratch.k_cumdecay, k_in, q_in, scratch.g_cum, scratch.qk, out,
             s_d, state_dst, scale, num_chunks, H, num_k_heads, v_dim, T);
     }
     CUDA_CHECK(cudaGetLastError());
@@ -808,6 +805,10 @@ void ggml_cuda_op_gated_delta_net_chunked(ggml_backend_cuda_context & ctx, ggml_
     // (kda, k>1, k!=128, non-contiguous, single-token decode).
     // num_chunks = ceil(T/CS): the last chunk may be partial; the kernels guard the padding tokens.
     const int num_chunks = (T + 15) / 16;
-    ggml_cuda_op_gated_delta_net_chunked_impl(ctx, dst, cache, B, T, H, num_k_heads, k_dim, v_dim, num_chunks, q_in,
+    // When fusing with the state cache copy (cache != nullptr), write the final state directly to
+    // the cache pointer instead of the default tail of dst->data.
+    const int64_t state_offset = (int64_t) v_dim * H * T * B;
+    float *       state_dst    = (cache != nullptr) ? cache->data : (float *) dst->data + state_offset;
+    ggml_cuda_op_gated_delta_net_chunked_impl(ctx, dst, (float *) dst->data, state_dst, B, T, H, num_k_heads, k_dim, v_dim, num_chunks, q_in,
                                               k_in, v_in, g_in, b_in, s_d, scale, v_tok_stride, stream);
 }
