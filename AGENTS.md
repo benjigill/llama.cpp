@@ -287,7 +287,7 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #26827 serialize MTP multi-ubatch decode - with -sm tensor, MTP catch-up after 100k+ token prefills queued ubatches against the same KV cache and could lock the host; the upstream test is pinned to the CPU backend here (it needs the abort callback)
 - #27451 shared prompt-cache checkpoints - saving a slot to `--cache-ram` no longer deep-copies its checkpoints, and a bad_alloc skips caching instead of aborting; locally, an unshared checkpoint buffer is resized in place so per-round speculative checkpoints do not reallocate
 - #29143 d2t draft vocab for MTP sidecars - base for the local embedded trim below
-- local embedded MTP d2t trim - the MTP draft head uses a trimmed `nextn.shared_head_head` (d2t rows of output.weight) instead of the full ~248k-row output.weight; needs a model copy made by `scripts/fork/mtp-d2t.py`, without it nothing changes; tg +2-5% (32k draft vocab), MTP acceptance within a few hundredths
+- local embedded MTP d2t trim - the MTP draft head uses a trimmed `nextn.shared_head_head` (d2t rows of output.weight) instead of the full ~248k-row output.weight; needs a model copy made by `scripts/fork/mtp-d2t.py`, without it nothing changes; tg +2-8% (49k draft vocab, probabilistic), MTP acceptance within a few hundredths
 
 Fork scripts and the manual steps they need (ngram-mod table, trimmed MTP draft vocab): `scripts/fork/README.md`.
 

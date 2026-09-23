@@ -39,15 +39,15 @@ The model has no projection of its own for step 2: the MTP layer reuses the main
 
 **What the script does.** It writes a copy of the model with two extra tensors:
 
-- `blk.<N>.nextn.shared_head_head.weight`: a projection used only for drafting, with the rows of `output.weight` for ~32k tokens, copied exactly (same quantization);
+- `blk.<N>.nextn.shared_head_head.weight`: a projection used only for drafting, with the rows of `output.weight` for ~49k tokens (`--n-draft`, default 49152), copied exactly (same quantization);
 - `d2t`: the real token id of each of those rows.
 
-When the file has `d2t`, the draft step uses the small projection and the scores of all other tokens are set to -inf. The target model keeps the full `output.weight`. Output quality does not change: the target still checks every drafted token, and a token outside the 32k can't be drafted but is still generated normally by the target. With the original GGUF nothing changes; the trim only exists in the copy.
+When the file has `d2t`, the draft step uses the small projection and the scores of all other tokens are set to -inf. The target model keeps the full `output.weight`. Output quality does not change: the target still checks every drafted token, and a token outside the trimmed set can't be drafted but is still generated normally by the target. With the original GGUF nothing changes; the trim only exists in the copy.
 
 **Which tokens are kept**, until `--n-draft` is reached: all special tokens (tool-call and think tags, etc.) and single characters, then the most frequent tokens of your traffic (from your ngram-mod table and/or a corpus), then the lowest token ids.
 
 ```sh
-python3 scripts/fork/mtp-d2t.py <model.gguf> <model-d2t.gguf> --n-draft 32768 --table <table.bin>
+python3 scripts/fork/mtp-d2t.py <model.gguf> <model-d2t.gguf> --n-draft 49152 --table <table.bin>
 # optional, count tokens from a corpus through a running llama-server with the same model:
 #   --corpus corpus.txt --server http://127.0.0.1:8080
 ```
@@ -55,4 +55,5 @@ python3 scripts/fork/mtp-d2t.py <model.gguf> <model-d2t.gguf> --n-draft 32768 --
 Then start `llama-server` with `-m <model-d2t.gguf>` (everything else unchanged; the ngram-mod table still works, the vocabulary size is the same). The load log shows `QWEN35 MTP using d2t draft-vocab trim of the embedded head (n_vocab_mtp = ...)`.
 
 - Rebuild the copy when your traffic changes a lot (run it again from the original GGUF with a fresh table), or when you update the base model.
-- It needs disk space for a full model copy. Under `-sm tensor` the small projection is kept whole on each GPU (~130 MB each).
+- It needs disk space for a full model copy. Under `-sm tensor` the small projection is kept whole on each GPU (~200 MB each at 49152).
+- Measured on the target machine: 49152 kept greedy acceptance closer to the original than 32768 at the same speed; with probabilistic drafting decode was +2.6 to +8.5% faster. Smaller sets draft faster but miss more tokens.

@@ -19,7 +19,7 @@
 #   3. the lowest token ids (BPE merge order, a rough frequency order)
 #
 # usage:
-#   python3 scripts/fork/mtp-d2t.py <model.gguf> <model-d2t.gguf> [--n-draft 32768] [--table <table.bin>]
+#   python3 scripts/fork/mtp-d2t.py <model.gguf> <model-d2t.gguf> [--n-draft 49152] [--table <table.bin>]
 #                                   [--corpus <corpus.txt> --server http://127.0.0.1:8080]
 #
 # note: with --table/--corpus the output file is derived from your data; keep it out of the repo
@@ -82,7 +82,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="add a trimmed MTP draft head (d2t) to a qwen35 GGUF (see the header of this file)")
     ap.add_argument("input")
     ap.add_argument("output")
-    ap.add_argument("--n-draft", type=int, default=32768, help="draft vocabulary size (default: 32768)")
+    ap.add_argument("--n-draft", type=int, default=49152, help="draft vocabulary size (default: 49152)")
     ap.add_argument("--table", action="append", default=[], help="ngram-mod table file to count tokens from")
     ap.add_argument("--corpus", action="append", default=[], help="text file (NUL-separated documents) to count tokens from")
     ap.add_argument("--server", help="llama-server URL with this model, for --corpus")

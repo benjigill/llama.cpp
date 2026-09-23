@@ -22,7 +22,12 @@ Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
   | greedy edit / write / prose | 73.45 / 68.68 / 62.32 | 75.08 / 69.91 / 63.92 | 0.44 / 0.38 / 0.31 | 0.42 / 0.36 / 0.30 |
   | probabilistic edit / write / prose | 84.82 / 76.04 / 75.71 | 86.46 / 80.01 / 78.50 | 0.56 / 0.45 / 0.46 | 0.54 / 0.46 / 0.45 |
 - Smaller than the 5-10% estimate: the draft steps are a small part of a round next to the 27B verify step, and the slightly lower acceptance gives some of it back.
-- Next: rebuild the copy with `--table` from the production ngram-mod file (and/or `--corpus`) and try `--n-draft 49152`, to see whether acceptance comes back to base while keeping the speedup.
+- `--n-draft 49152` (now the script default), same base run:
+  | | tg base | tg d2t | accept base | accept d2t |
+  | --- | --- | --- | --- | --- |
+  | greedy edit / write / prose | 73.45 / 68.68 / 62.32 | 74.76 / 69.97 / 63.39 | 0.44 / 0.38 / 0.31 | 0.43 / 0.37 / 0.31 |
+  | probabilistic edit / write / prose | 84.82 / 76.04 / 75.71 | 87.05 / 82.53 / 79.33 | 0.56 / 0.45 / 0.46 | 0.55 / 0.49 / 0.47 |
+- 49152 vs 32768: greedy speed the same (within 0.5 t/s), greedy acceptance about halfway back to base (-2% vs -4% relative); probabilistic +2.6 / +8.5 / +4.8% vs +1.9 / +5.2 / +3.7%. Greedy is the clean signal (a trimmed draft can only lose accepted tokens there); the probabilistic acceptance above base (write 0.45 -> 0.49) cannot come from the trim and is sampling noise at temp 1.0, so read the probabilistic gains as roughly +3-5%.
 
 ### 2. Row-per-warp GATED_DELTA_NET decode kernel (upstream #22587) - todo
 
