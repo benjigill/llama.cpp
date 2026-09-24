@@ -29,12 +29,15 @@ Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
   | probabilistic edit / write / prose | 84.82 / 76.04 / 75.71 | 87.05 / 82.53 / 79.33 | 0.56 / 0.45 / 0.46 | 0.55 / 0.49 / 0.47 |
 - 49152 vs 32768: greedy speed the same (within 0.5 t/s), greedy acceptance about halfway back to base (-2% vs -4% relative); probabilistic +2.6 / +8.5 / +4.8% vs +1.9 / +5.2 / +3.7%. Greedy is the clean signal (a trimmed draft can only lose accepted tokens there); the probabilistic acceptance above base (write 0.45 -> 0.49) cannot come from the trim and is sampling noise at temp 1.0, so read the probabilistic gains as roughly +3-5%.
 
-### 2. Row-per-warp GATED_DELTA_NET decode kernel (upstream #22587) - todo
+### 2. Row-per-warp GATED_DELTA_NET decode kernel (upstream #22587) - done
 
 - Rewrites the recurrent GDN kernel (one warp per group of output rows).
 - Upstream numbers (RTX 5090): kernel +13-16% at 1-4 tokens (our MTP verify is 4 tokens), +20-50% at 32-1024 tokens; +4-7% pp end to end on Qwen3.5-27B Q4_K_M.
 - Hits all 48 GDN layers on every decode and verify step, and the recurrent tail of our chunked split path.
 - Conflicts with the local chunked-GDN-with-snapshots patch in `ggml/src/ggml-cuda/gated_delta_net.cu`; re-run `test-backend-ops -o GATED_DELTA_NET` and `-o GATED_DELTA_NET_CACHE_FUSION`.
+- Applied (branch `feat/gdn-row-per-warp`) as a port: the PR predates PDL, cache fusion and our snapshots, so the kernel body was moved into our file with those kept. 55/55 + 7/7 tests pass on both GPUs.
+- Kernel (`test-backend-ops perf`, 5070 Ti, master -> branch): 1 token 2.93 -> 2.91 us (flat), KDA 1 token 3.05 -> 2.94 us; 64 tokens 32h d128 68.56 -> 43.11 us (1.59x), 4h 22.13 -> 19.77 us, KDA 78.62 -> 46.35 us; 256+ tokens identical (chunked kernel).
+- End to end: micro and batched within +-0.4%. Decode moved with acceptance (greedy text differs with the new summation order) and was flat where acceptance was flat, so no decode gain. The gain is on 2-130 token batches that the chunked kernel does not take (short follow-up turns, tool results after a cache hit), which the bench suites barely exercise.
 
 ### 3. Serialize MTP multi-ubatch decode (upstream #26827) - done
 
