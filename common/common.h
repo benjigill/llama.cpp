@@ -16,6 +16,7 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 
@@ -816,7 +817,9 @@ static std::vector<T> string_split(const std::string & str, char delim) {
     while (std::getline(str_stream, token, delim)) {
         T value;
         std::istringstream token_stream(token);
-        token_stream >> value;
+        if (!(token_stream >> value)) {
+            throw std::invalid_argument("invalid value: \"" + token + "\"");
+        }
         values.push_back(value);
     }
     return values;
@@ -889,6 +892,18 @@ std::string string_from(const struct llama_context * ctx, const struct llama_bat
 bool glob_match(const std::string & pattern, const std::string & str);
 
 //
+// Unicode utils
+//
+
+#ifdef _WIN32
+std::wstring utf8_to_wstring(const std::string & str);
+std::string  wstring_to_utf8(const std::wstring & str);
+#endif
+
+// returns the path as a UTF-8 string, preserving its separators
+std::string fs_path_to_utf8(const std::filesystem::path & path);
+
+//
 // Environment utils
 //
 
@@ -896,6 +911,9 @@ bool glob_match(const std::string & pattern, const std::string & str);
 // and setting an empty value unsets the variable
 std::string common_get_env(const std::string & name);
 void        common_set_env(const std::string & name, const std::string & value);
+
+// reads a path from the environment, an unset variable gives an empty path
+std::filesystem::path common_get_path_from_env(const std::string & name);
 
 //
 // Filesystem utils
