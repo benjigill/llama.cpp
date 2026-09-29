@@ -46,7 +46,7 @@ struct common_speculative_output_limits {
 common_speculative_output_limits common_speculative_get_output_limits(
         int32_t n_batch, int32_t n_parallel, int32_t n_draft);
 
-common_speculative * common_speculative_init(common_params_speculative & params, uint32_t n_seq);
+common_speculative * common_speculative_init(common_params_speculative & params, uint32_t n_seq, bool cost_routing = false);
 
 void common_speculative_free(common_speculative * spec);
 
@@ -75,9 +75,15 @@ struct common_speculative_draft_params {
 
     // the target's config; only temp and seed are read, to retune the draft sampler
     const common_params_sampling * sampling = nullptr;
+
+    // skip ngram-mod for this sequence and try MTP instead
+    bool prefer_mtp = false;
 };
 
 common_speculative_draft_params & common_speculative_get_draft_params(common_speculative * spec, llama_seq_id seq_id);
+
+bool common_speculative_cost_routing_enabled(const common_speculative * spec);
+enum common_speculative_type common_speculative_get_last_type(const common_speculative * spec, llama_seq_id seq_id);
 
 // optionally call once at the beginning of a new generation
 void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, const llama_tokens & prompt);

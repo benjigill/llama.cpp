@@ -14,6 +14,39 @@ Everything these scripts produce from your own data (corpora, ngram tables, trim
 
 Each script's header comment has the full usage.
 
+## Production-like latency and long-context benchmark
+
+`bench_qwen38.py run --production` uses the server startup's 262144-token shared KV pool, two slots capped at 160000 tokens each, probabilistic MTP drafting, draft KV types and CUDA checkpoint settings. It leaves the existing micro and batched suites unchanged. Pass `--mmproj <mmproj.gguf>` to match the multimodal load, and `--ngram-table <table.bin>` to match the primed ngram-mod table. The script copies that table for each server start, so benchmarking never changes the original.
+
+`--suite long-context` measures streamed time to the first generated content or reasoning chunk (not the initial role event), prompt throughput and cache reuse at approximately 8192, 32768, 128000 and 155000 tokens. The script measures actual chat-template token counts before sending each prompt, records processed and cached tokens, and exercises two simultaneous slots through 128000 tokens when `--production` is set. It does not try two 155000-token slots: they cannot both fit in the 262144-token pool. Each depth gets one cold request and one warm request; the context suite is intentionally costly.
+
+```sh
+python3 scripts/fork/bench_qwen38.py run --bin <base-build/bin> --label baseline --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite long-context,decode,parallel
+python3 scripts/fork/bench_qwen38.py run --bin <candidate-build/bin> --label candidate --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite long-context,decode,parallel
+python3 scripts/fork/bench_qwen38.py compare bench-results/baseline bench-results/candidate
+```
+
+Use `--suite decode,parallel` for a shorter decode/concurrency run, or `--server-extra "--spec-type draft-mtp"` on both builds to isolate MTP from ngram-mod. Stop other servers using the GPUs first. Results and server logs go under `bench-results/` and stay private; compare the same suite and flags on both builds.
+
+## Ngram-mod / MTP cost routing
+
+When both `ngram-mod` and `draft-mtp` are the only configured speculators, the server chooses per slot using measured time from drafting through verification and any checkpoint replay, divided by the number of tokens produced. Each source has a 1/8-weight moving estimate; MTP must be at least 5% faster to displace ngram. It tries ngram first, then MTP to establish estimates, and probes the other choice every 32 rounds. An ngram miss still falls through to MTP. The estimates reset with each request and appear in the slot timing log. Other speculative configurations keep their existing ordering and cooldown.
+
+The fixed ngram-first policy and low-acceptance cooldown remain the default (unset or `LLAMA_SPEC_COST_ROUTING=0`); `LLAMA_SPEC_COST_ROUTING=1` opts into experimental cost routing. Set the variable on the `bench_qwen38.py run` command so its child server inherits it. Compare both decode and parallel suites with the same model, table and seeds; the policy affects decode, not cold prefill.
+
+Repeat the A/B runs in alternating order before interpreting small changes, especially for `-np 2`. The `--reps` flag repeats decode requests but not the six-request parallel suite. To check greedy correctness, run `--suite decode --greedy-check` with each policy and compare the results. This sends temperature 0 requests and stores hashes of complete responses and separate content, reasoning, tool-call and finish-reason hashes, not response text. `compare` reports exact and per-field match counts and fails if any complete responses differ. With the production reasoning budget and 768-token response limit, all nine fixed-policy responses and all nine cost-policy responses ended before visible content; matching empty content hashes do not validate answers. Use `--greedy-reasoning-budget 128` to limit reasoning for this check only. A 2048-token limit was insufficient to finish the long edit task in either policy; use a larger `--max-tokens` for a completed-answer check. The comparison also requires visible, completed answers and refuses to compare different budgets or token limits. This shorter reasoning workload is a control, not a correctness check of the full production reasoning trace or a distribution test at temperature 1.
+
+```sh
+LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode,parallel
+LLAMA_SPEC_COST_ROUTING=1 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode,parallel
+python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed bench-results/spec-cost
+LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed-complete --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode --greedy-check --greedy-reasoning-budget 128 --max-tokens 8192
+LLAMA_SPEC_COST_ROUTING=1 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost-complete --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode --greedy-check --greedy-reasoning-budget 128 --max-tokens 8192
+python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed-complete bench-results/spec-cost-complete
+```
+
+If greedy output differs, rerun each policy with a new label and compare it against itself before interpreting the cross-policy difference. Increase `--max-tokens` on both runs if the comparison reports unfinished answers. Leave cost routing disabled for production until it is validated.
+
 ## Persistent, primed ngram-mod table
 
 `--spec-ngram-mod-file <table.bin>` loads the ngram-mod table at startup and saves it at clean shutdown, so what the server learned from your automations survives restarts. The file is binary (use `.bin`) and always the full table size; the log line `ngram_mod table loaded from ...: <used>/<size> cells used` shows how full it is.

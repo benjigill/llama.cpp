@@ -2,7 +2,7 @@
 
 Backlog of performance, memory and stability work for this fork (see the Fork Policy section of AGENTS.md for the target workload). Adopted patches move to the "Carried patches" list in AGENTS.md; this file keeps the reasoning, status and measured outcome.
 
-Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
+Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is pending), `dropped` (say why).
 
 ## Backlog
 
@@ -61,6 +61,25 @@ Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
 - Applied (branch `feat/mtp-ubatch-dvocab-cache`), with a local fix: upstream allocates a fresh zeroed buffer for every checkpoint update, including the per-round speculative checkpoint (ngram drafts longer than n_rs_seq); an unshared buffer is now resized in place as before.
 - Result (with #26827, `cache` suite, branch vs master build): prompt tokens re-processed identical (warm 18/16/17, multi-turn 26/22); cold TTFT 19.72 -> 19.89 s (+0.9%), multi-turn TTFT 0.52 -> 0.54 / 0.52 -> 0.52 s, single samples, noise. No regression. The suite does not reach the cases these fix (100k+ MTP prefills under -sm tensor; `--cache-ram` near its limit), so there is no gain to show either. Branch side ran on the d2t copy, which only changes draft steps.
 - Later: #28092 `--cache-disk` (persistent prompt cache across restarts, +1706 lines); wait for it to settle upstream.
+
+### 6. Cost-based ngram-mod / MTP routing (local) - done, experimental and shelved
+
+- The fixed low-acceptance cooldown chooses based only on ngram acceptance, not the latency of a verification round and its checkpoint replay. With both speculators, ngram-mod is always tried before MTP.
+- For the ngram-mod + MTP pair, estimate per-slot time per produced token from complete rounds (draft, verify and replay), using a 1/8-weight moving estimate and a 5% margin before choosing MTP; probe the other source every 32 rounds. A table miss still falls back to MTP. Other speculative configurations keep the old policy.
+- Opt-in for the pair with `LLAMA_SPEC_COST_ROUTING=1`; unset or `0` uses the unchanged fixed ngram-first/cooldown policy. The per-request cost estimates and round counts are logged with slot timings when routing is enabled.
+- Production baseline supplied before this change: probabilistic edit/write/prose 84.4/77.5/75.3 t/s with aggregate acceptance 0.54/0.46/0.45; `-np 1` 73.2 aggregate t/s, `-np 2` 109.0 aggregate t/s.
+- First same-build A/B on the target GPUs (`spec-fixed` vs `spec-cost`): probabilistic edit 84.56 -> 85.27 t/s (+0.8%, acceptance 0.54 -> 0.55); write 77.73 -> 84.87 t/s (+9.2%, acceptance 0.46 -> 0.54); prose 75.57 -> 77.42 t/s (+2.4%, acceptance 0.45 -> 0.47). Parallel `-np 1` aggregate 73.33 -> 75.23 t/s (+2.6%); `-np 2` aggregate 109.09 -> 107.08 t/s (-1.8%) and per-request 59.48 -> 58.95 t/s (-0.9%). Repeat runs and check source-selection logs before treating small differences as reliable; output correctness and distribution still need validation.
+- Repeat A/B: edit 85.62 -> 87.08 t/s (+1.7%); write 80.83 -> 80.50 t/s (-0.4%); prose 75.74 -> 77.41 t/s (+2.2%). Parallel `-np 1` 73.23 -> 75.43 t/s (+3.0%), `-np 2` 108.98 -> 106.72 t/s (-2.1%). The first write gain did not reproduce; the two-slot loss did.
+- Greedy fixed-vs-cost output hashes matched only 1/3 edit, 1/3 write, 2/3 prose responses; greedy edit/write were ~9% slower under cost routing. A hash difference is not proof of incorrect tokens (the benchmark hashes the entire response, including reasoning), but this is not a passing correctness control. Cost-routing logs show only 0-2 successful ngram rounds versus ~277-325 MTP rounds per request; they do not distinguish skipped ngram attempts from table misses. The policy is opt-in pending diagnosis of output differences and source selection.
+- Greedy repeat on the target GPUs: both fixed-vs-fixed and cost-vs-cost matched 3/3 per task (9/9 each), with throughput within 0.4%. Fixed-vs-cost again matched 1/3 edit, 1/3 write and 2/3 prose; only `reasoning_content` hashes differed. All 18 responses had empty visible content at the 768-token limit, so 3/3 matching content hashes do not validate answers. Add a bounded per-request reasoning budget and require a visible completed response before treating a greedy comparison as an answer check. The ~9% greedy edit/write slowdown remains repeatable.
+- Greedy with a 128-token reasoning budget and 2048-token response limit: edit 180.63 -> 145.32 t/s (-19.5%), write 138.53 -> 120.77 (-12.8%), prose 86.74 -> 89.03 (+2.6%). Completed visible write answers matched 0/3 and prose answers 2/3 across policies; edit answers matched 1/3 but all six edit responses hit the output limit, so none is a complete answer comparison. The same-policy 9/9 control was on the earlier unbounded-reasoning run, not this bounded run; do not attribute these answer differences solely to routing without a same-policy repeat. Higher draft acceptance with cost routing did not offset the greedy edit/write slowdown. Keep routing opt-in; the result does not support enabling it for the two-slot production workload.
+- Shelved: the implementation remains available behind `LLAMA_SPEC_COST_ROUTING=1` for diagnosis, but no further tuning is planned until a credible performance and completed-answer correctness case emerges.
+
+### 7. GDN MMA prefill with rollback snapshots (upstream ggml-org/llama.cpp#29353) - deferred
+
+- The open upstream MMA kernel targets `K == 1`; its author confirmed that MTP prefill with snapshots (`K > 1`) cannot use it as submitted. The fork already runs the chunked kernel on the first `n_tokens - (K - 1)` tokens and the recurrent kernel on the final `K - 1` tokens.
+- Wait for upstream support for `K > 1` instead of importing the current `K == 1`-only kernel and maintaining a separate adaptation. If it becomes available, compare its snapshot handling with the fork's prefix/tail path before porting it.
+- Upstream reports about 10-13% prompt throughput over its recurrent baseline on Qwen3.8-27B Q4_K_M, but that is not a gain over this fork's existing chunked path. Any later port needs cache-fused snapshot and numeric checks in `test-backend-ops`, followed by server prefill, decode and long-context A/B runs with speculative decoding enabled (`-ub 512`, tensor split). No CUDA code has been imported.
 
 ## Considered, not now
 
