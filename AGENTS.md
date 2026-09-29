@@ -289,7 +289,7 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #27451 shared prompt-cache checkpoints - saving a slot to `--cache-ram` no longer deep-copies its checkpoints, and a bad_alloc skips caching instead of aborting; locally, an unshared checkpoint buffer is resized in place so per-round speculative checkpoints do not reallocate
 - #29143 d2t draft vocab for MTP sidecars - base for the local embedded trim below
 - local embedded MTP d2t trim - the MTP draft head uses a trimmed `nextn.shared_head_head` (d2t rows of output.weight) instead of the full ~248k-row output.weight; needs a model copy made by `scripts/fork/mtp-d2t.py`, without it nothing changes; tg +2-8% (49k draft vocab, probabilistic), MTP acceptance within a few hundredths
-- local ngram-mod/MTP cost routing - per-slot time per generated token selects the drafter, with periodic probes; `LLAMA_SPEC_COST_ROUTING=0` restores the fixed cooldown; first A/B: write tg +9.2%, prose +2.4%, edit +0.8%, np2 throughput -1.8% (repeat pending)
+- local ngram-mod/MTP cost routing (experimental, opt-in with `LLAMA_SPEC_COST_ROUTING=1`) - per-slot time per generated token selects the drafter, with periodic probes; repeat A/B lost the initial write gain, np2 throughput fell ~2% twice, and greedy output hashes differed; fixed cooldown remains the default
 
 Fork scripts and the manual steps they need (ngram-mod table, trimmed MTP draft vocab): `scripts/fork/README.md`.
 

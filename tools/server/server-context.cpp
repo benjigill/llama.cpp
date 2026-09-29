@@ -1333,7 +1333,7 @@ private:
 
         // try speculative decoding
         if (ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
-            bool enable_cost_routing = true;
+            bool enable_cost_routing = false;
             if (const char * env = getenv("LLAMA_SPEC_COST_ROUTING")) {
                 const std::string value(env);
                 if (value != "0" && value != "1") {

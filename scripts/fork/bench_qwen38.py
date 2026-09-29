@@ -215,6 +215,15 @@ def chat(messages, max_tokens, seed, greedy_check=False):
     if greedy_check:
         output = {"message": msg, "finish_reason": res["choices"][0]["finish_reason"]}
         result["output_hash"] = hashlib.sha256(json.dumps(output, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+        result["field_hashes"] = {
+            field: hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+            for field, value in {
+                "content": msg.get("content"),
+                "reasoning_content": msg.get("reasoning_content"),
+                "tool_calls": msg.get("tool_calls"),
+                "finish_reason": output["finish_reason"],
+            }.items()
+        }
     return result
 
 
@@ -309,6 +318,8 @@ def test_decode(a, out, name, extra):
             res[task] = summarize(rows)
             if a.greedy_check:
                 res[task]["hashes"] = [r["output_hash"] for r in rows]
+                res[task]["field_hashes"] = [r["field_hashes"] for r in rows]
+                res[task]["nonempty_content"] = sum(bool(r["content"]) for r in rows)
             log(f"  [{name}] {task:<6} tg {res[task]['gen_tps']:6.1f} t/s  accept {res[task]['accept']:.2f}")
     return res
 
@@ -518,6 +529,11 @@ def cmd_compare(a):
                     matched = sum(a == b for a, b in zip(x, y))
                     mismatched_outputs += len(x) - matched
                     print(f"  {mode} {task} outputs match: {matched}/{len(x)}")
+                    if "field_hashes" in base[task] and "field_hashes" in r:
+                        for field in ("content", "reasoning_content", "tool_calls", "finish_reason"):
+                            field_matched = sum(a[field] == b[field] for a, b in zip(base[task]["field_hashes"], r["field_hashes"]))
+                            print(f"  {mode} {task} {field} matches: {field_matched}/{len(x)}")
+                        print(f"  {mode} {task} nonempty content: {base[task]['nonempty_content']}/{len(x)} vs {r['nonempty_content']}/{len(y)}")
     pa, pb = load(A, "parallel.json"), load(B, "parallel.json")
     if pa and pb:
         print("\nparallel.json")

@@ -32,18 +32,20 @@ Use `--suite decode,parallel` for a shorter decode/concurrency run, or `--server
 
 When both `ngram-mod` and `draft-mtp` are the only configured speculators, the server chooses per slot using measured time from drafting through verification and any checkpoint replay, divided by the number of tokens produced. Each source has a 1/8-weight moving estimate; MTP must be at least 5% faster to displace ngram. It tries ngram first, then MTP to establish estimates, and probes the other choice every 32 rounds. An ngram miss still falls through to MTP. The estimates reset with each request and appear in the slot timing log. Other speculative configurations keep their existing ordering and cooldown.
 
-`LLAMA_SPEC_COST_ROUTING=0` restores the old ngram-first policy and low-acceptance cooldown for a same-build A/B run; unset or `1` enables cost routing. Set the variable on the `bench_qwen38.py run` command so its child server inherits it. Compare both decode and parallel suites with the same model, table and seeds; the policy affects decode, not cold prefill.
+The fixed ngram-first policy and low-acceptance cooldown remain the default (unset or `LLAMA_SPEC_COST_ROUTING=0`); `LLAMA_SPEC_COST_ROUTING=1` opts into experimental cost routing. Set the variable on the `bench_qwen38.py run` command so its child server inherits it. Compare both decode and parallel suites with the same model, table and seeds; the policy affects decode, not cold prefill.
 
-Repeat the A/B runs in alternating order before interpreting small changes, especially for `-np 2`. The `--reps` flag repeats decode requests but not the six-request parallel suite. To check greedy correctness, run `--suite decode --greedy-check` with each policy and compare the results. This sends temperature 0 requests and stores hashes of complete responses (including reasoning and tool calls), not response text. `compare` reports the exact match count and fails if any responses differ. An exact match is a useful control, not a distribution test at temperature 1.
+Repeat the A/B runs in alternating order before interpreting small changes, especially for `-np 2`. The `--reps` flag repeats decode requests but not the six-request parallel suite. To check greedy correctness, run `--suite decode --greedy-check` with each policy and compare the results. This sends temperature 0 requests and stores hashes of complete responses and separate content, reasoning, tool-call and finish-reason hashes, not response text. `compare` reports exact and per-field match counts and fails if any complete responses differ. A content match is not meaningful when both responses have empty content; the comparison also reports how many responses had nonempty content. An exact match is a useful control, not a distribution test at temperature 1.
 
 ```sh
-LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode,parallel
-python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode,parallel
+LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode,parallel
+LLAMA_SPEC_COST_ROUTING=1 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode,parallel
 python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed bench-results/spec-cost
-LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed-check --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode --greedy-check
-python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost-check --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode --greedy-check
+LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed-check --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode --greedy-check
+LLAMA_SPEC_COST_ROUTING=1 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost-check --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode --greedy-check
 python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed-check bench-results/spec-cost-check
 ```
+
+If greedy output differs, rerun each policy with a new label and compare it against itself before interpreting the cross-policy difference. Existing greedy results have only the complete-response hashes; rerun both policies with the current script for the per-field breakdown. Leave cost routing disabled for production until it is validated.
 
 ## Persistent, primed ngram-mod table
 
