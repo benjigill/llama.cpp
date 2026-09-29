@@ -8,6 +8,7 @@
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -192,8 +193,9 @@ class Server:
                 self.table_dir.cleanup()
 
 
-def chat(messages, max_tokens, seed):
-    body = {"messages": messages, "max_tokens": max_tokens, "seed": seed, "stream": False, **SAMPLING}
+def chat(messages, max_tokens, seed, greedy_check=False):
+    body = {"messages": messages, "max_tokens": max_tokens, "seed": seed, "stream": False,
+            **SAMPLING, **({"temperature": 0.0} if greedy_check else {})}
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     t0 = time.time()
@@ -202,7 +204,7 @@ def chat(messages, max_tokens, seed):
     wall = time.time() - t0
     t = res.get("timings", {})
     msg = res["choices"][0]["message"]
-    return {
+    result = {
         "wall_s": wall,
         "prompt_n": t.get("prompt_n", 0), "cache_n": t.get("cache_n", 0),
         "prompt_ms": t.get("prompt_ms", 0.0), "prompt_tps": t.get("prompt_per_second", 0.0),
@@ -210,6 +212,10 @@ def chat(messages, max_tokens, seed):
         "draft_n": t.get("draft_n", 0), "draft_acc": t.get("draft_n_accepted", 0),
         "content": msg.get("content") or "",
     }
+    if greedy_check:
+        output = {"message": msg, "finish_reason": res["choices"][0]["finish_reason"]}
+        result["output_hash"] = hashlib.sha256(json.dumps(output, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+    return result
 
 
 def post_json(path, body):
@@ -299,8 +305,10 @@ def test_decode(a, out, name, extra):
     with Server(a, out, name, extra):
         chat([{"role": "user", "content": "hi"}], 16, 1)  # warmup
         for task, prompt in DECODE_TASKS:
-            rows = [chat([{"role": "user", "content": prompt()}], a.max_tokens, 1000 + i) for i in range(a.reps)]
+            rows = [chat([{"role": "user", "content": prompt()}], a.max_tokens, 1000 + i, a.greedy_check) for i in range(a.reps)]
             res[task] = summarize(rows)
+            if a.greedy_check:
+                res[task]["hashes"] = [r["output_hash"] for r in rows]
             log(f"  [{name}] {task:<6} tg {res[task]['gen_tps']:6.1f} t/s  accept {res[task]['accept']:.2f}")
     return res
 
@@ -405,12 +413,17 @@ def cmd_run(a):
     valid = {"micro", "batched", "cache", "decode", "parallel", "long-context"}
     if set(suites) - valid:
         raise ValueError(f"unknown suites: {', '.join(sorted(set(suites) - valid))}")
+    if a.reps < 1:
+        raise ValueError("--reps must be positive")
+    if a.greedy_check and suites != ["decode"]:
+        raise ValueError("--greedy-check requires --suite decode")
     if a.ngram_table and "--spec-ngram-mod-file" in extra:
         raise ValueError("use either --ngram-table or --spec-ngram-mod-file in --server-extra")
     if a.ngram_table and not Path(a.ngram_table).is_file():
         raise FileNotFoundError(a.ngram_table)
     out.mkdir(parents=True, exist_ok=True)
     meta = {"label": a.label, "bin": a.bin, "model": a.model, "suites": suites, "production": a.production,
+            "greedy_check": a.greedy_check,
             "ngram_table": a.ngram_table, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
     try:
         meta["version"] = subprocess.run([str(Path(a.bin) / "llama-server"), "--version"], capture_output=True, text=True).stderr.strip()
@@ -429,10 +442,13 @@ def cmd_run(a):
         (out / "cache.json").write_text(json.dumps(test_cache(a, out, extra), indent=1))
     if "decode" in suites:
         res = {}
-        if not a.production:
+        if a.greedy_check:
+            log("== decode (greedy output check)")
+            res["greedy-check"] = test_decode(a, out, "check", extra)
+        elif not a.production:
             log("== decode (spec greedy)")
             res["greedy"] = test_decode(a, out, "greedy", extra)
-        if a.production or a.probabilistic:
+        if not a.greedy_check and (a.production or a.probabilistic):
             log("== decode (spec probabilistic)")
             prob_extra = extra if a.production else extra + ["--spec-draft-sampling", "probabilistic"]
             res["probabilistic"] = test_decode(a, out, "prob", prob_extra)
@@ -483,15 +499,25 @@ def cmd_compare(a):
             row(f"multiturn{i} prompt_n", x["prompt_n"], y["prompt_n"], higher=False)
             row(f"multiturn{i} ttft s", x["prompt_ms"] / 1000, y["prompt_ms"] / 1000, higher=False)
     da, db = load(A, "decode.json"), load(B, "decode.json")
+    mismatched_outputs = 0
     if da and db:
+        if ("greedy-check" in da) != ("greedy-check" in db):
+            raise ValueError("both runs must use --greedy-check to compare greedy output")
         print("\ndecode.json")
-        for mode in ["greedy", "probabilistic"]:
+        for mode in ["greedy", "probabilistic", "greedy-check"]:
             base = da.get(mode)
             if base is None or mode not in db:
                 continue
             for task, r in db[mode].items():
                 row(f"{mode} {task} tg t/s", base[task]["gen_tps"], r["gen_tps"])
                 row(f"{mode} {task} accept", base[task]["accept"], r["accept"])
+                if mode == "greedy-check":
+                    x, y = base[task]["hashes"], r["hashes"]
+                    if len(x) != len(y):
+                        raise ValueError(f"{task}: output counts differ ({len(x)} vs {len(y)})")
+                    matched = sum(a == b for a, b in zip(x, y))
+                    mismatched_outputs += len(x) - matched
+                    print(f"  {mode} {task} outputs match: {matched}/{len(x)}")
     pa, pb = load(A, "parallel.json"), load(B, "parallel.json")
     if pa and pb:
         print("\nparallel.json")
@@ -519,6 +545,8 @@ def cmd_compare(a):
                 row(f"{depth} two-slot max TTFT s", max(r["ttft_s"] for r in x["requests"]),
                     max(r["ttft_s"] for r in y["requests"]), higher=False)
                 row(f"{depth} two-slot end-to-end t/s", x["end_to_end_tps"], y["end_to_end_tps"])
+    if mismatched_outputs:
+        raise SystemExit(f"{mismatched_outputs} greedy responses differ; inspect before retaining the change")
 
 
 def main():
@@ -538,6 +566,7 @@ def main():
     r.add_argument("--server-extra", default="", help="extra llama-server args, space separated")
     r.add_argument("--production", action="store_true", help="use startup's context, two-slot, draft, and CUDA settings for server suites")
     r.add_argument("--ngram-table", help="copy this table for each server start; the original is never modified")
+    r.add_argument("--greedy-check", action="store_true", help="with --suite decode, use temp 0 and compare response digests without saving text")
     c = sub.add_parser("compare")
     c.add_argument("a")
     c.add_argument("b")

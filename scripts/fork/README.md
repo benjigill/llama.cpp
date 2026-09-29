@@ -34,10 +34,15 @@ When both `ngram-mod` and `draft-mtp` are the only configured speculators, the s
 
 `LLAMA_SPEC_COST_ROUTING=0` restores the old ngram-first policy and low-acceptance cooldown for a same-build A/B run; unset or `1` enables cost routing. Set the variable on the `bench_qwen38.py run` command so its child server inherits it. Compare both decode and parallel suites with the same model, table and seeds; the policy affects decode, not cold prefill.
 
+Repeat the A/B runs in alternating order before interpreting small changes, especially for `-np 2`. The `--reps` flag repeats decode requests but not the six-request parallel suite. To check greedy correctness, run `--suite decode --greedy-check` with each policy and compare the results. This sends temperature 0 requests and stores hashes of complete responses (including reasoning and tool calls), not response text. `compare` reports the exact match count and fails if any responses differ. An exact match is a useful control, not a distribution test at temperature 1.
+
 ```sh
 LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode,parallel
 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode,parallel
 python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed bench-results/spec-cost
+LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed-check --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode --greedy-check
+python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost-check --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode --greedy-check
+python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed-check bench-results/spec-cost-check
 ```
 
 ## Persistent, primed ngram-mod table

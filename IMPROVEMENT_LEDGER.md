@@ -67,7 +67,8 @@ Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
 - The fixed low-acceptance cooldown chooses based only on ngram acceptance, not the latency of a verification round and its checkpoint replay. With both speculators, ngram-mod is always tried before MTP.
 - For the ngram-mod + MTP pair, estimate per-slot time per produced token from complete rounds (draft, verify and replay), using a 1/8-weight moving estimate and a 5% margin before choosing MTP; probe the other source every 32 rounds. A table miss still falls back to MTP. Other speculative configurations keep the old policy.
 - Default-on for the pair; `LLAMA_SPEC_COST_ROUTING=0` provides the unchanged same-build baseline. The per-request cost estimates and round counts are logged with slot timings.
-- Production baseline supplied before this change: probabilistic edit/write/prose 84.4/77.5/75.3 t/s with aggregate acceptance 0.54/0.46/0.45; `-np 1` 73.2 aggregate t/s, `-np 2` 109.0 aggregate t/s. Run the same benchmark and verify source selection, acceptance and latency on the target GPUs before retaining this patch.
+- Production baseline supplied before this change: probabilistic edit/write/prose 84.4/77.5/75.3 t/s with aggregate acceptance 0.54/0.46/0.45; `-np 1` 73.2 aggregate t/s, `-np 2` 109.0 aggregate t/s.
+- First same-build A/B on the target GPUs (`spec-fixed` vs `spec-cost`): probabilistic edit 84.56 -> 85.27 t/s (+0.8%, acceptance 0.54 -> 0.55); write 77.73 -> 84.87 t/s (+9.2%, acceptance 0.46 -> 0.54); prose 75.57 -> 77.42 t/s (+2.4%, acceptance 0.45 -> 0.47). Parallel `-np 1` aggregate 73.33 -> 75.23 t/s (+2.6%); `-np 2` aggregate 109.09 -> 107.08 t/s (-1.8%) and per-request 59.48 -> 58.95 t/s (-0.9%). Repeat runs and check source-selection logs before treating small differences as reliable; output correctness and distribution still need validation.
 
 ## Considered, not now
 
