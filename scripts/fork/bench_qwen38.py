@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # A/B benchmark for the Qwen3.8-27B fork. Stdlib only.
 #
-#   run:     bench_qwen38.py run --bin <build/bin> --label <name> --model <gguf> [--mmproj <gguf>] [--suite ...]
+#   run:     bench_qwen38.py run --bin <build/bin> --label <name> --model <gguf> [--mmproj <gguf>] [--production --ngram-table <table.bin>] [--suite ...]
 #   compare: bench_qwen38.py compare <results/a> <results/b>
 #
 # Stop any other llama-server using the GPUs first, or the numbers are meaningless.
@@ -11,9 +11,11 @@ import concurrent.futures
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -32,6 +34,13 @@ SERVER_ARGS = [
     "--n-gpu-layers", "999", "--cache-ram", "80000",
 ]
 
+PRODUCTION_ARGS = [
+    "-c", "262144", "-np", "2", "--kv-unified", "--kv-unified-per-slot", "160000",
+    "-ctkd", "q8_0", "-ctvd", "q4_0", "--spec-draft-sampling", "probabilistic",
+    "--reasoning-budget", "16384", "--reasoning-budget-message", "Thinking budget exceeded. Proceed to final answer.",
+    "--metrics",
+]
+
 SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0}
 
 ENV_DEFAULTS = {
@@ -43,12 +52,16 @@ ENV_DEFAULTS = {
 }
 
 PORT = 11555
+LONG_DEPTHS = [8192, 32768, 128000, 155000]
 
 
-def env():
+def env(production=False):
     e = dict(os.environ)
     for k, v in ENV_DEFAULTS.items():
         e.setdefault(k, v)
+    if production:
+        e.setdefault("LLAMA_SPEC_CKPT_ON_DEVICE", "1")
+        e.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
     return e
 
 
@@ -126,33 +139,57 @@ class Server:
         self.cmd = [str(Path(a.bin) / "llama-server"), "--model", a.model, "--host", "127.0.0.1", "--port", str(PORT)]
         if a.mmproj:
             self.cmd += ["--mmproj", a.mmproj]
-        self.cmd += merge_args(SERVER_ARGS, extra)
+        self.cmd += merge_args(SERVER_ARGS, (PRODUCTION_ARGS if a.production else []) + extra)
+        self.production = a.production
+        self.ngram_table = a.ngram_table
+        self.out = out
+        self.table_dir = None
         self.logf = open(out / f"server-{name}.log", "w")
 
     def __enter__(self):
-        log(" ".join(self.cmd))
-        self.p = subprocess.Popen(self.cmd, env=env(), stdout=self.logf, stderr=subprocess.STDOUT, start_new_session=True)
-        t0 = time.time()
-        while time.time() - t0 < 900:
-            if self.p.poll() is not None:
-                raise SystemExit(f"llama-server exited early, see {self.logf.name}")
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=2) as r:
-                    if r.status == 200:
-                        return self
-            except (urllib.error.URLError, ConnectionError, TimeoutError):
-                pass
-            time.sleep(2)
-        raise SystemExit("llama-server did not become healthy")
+        try:
+            if self.ngram_table:
+                self.table_dir = tempfile.TemporaryDirectory(prefix="ngram-", dir=self.out)
+                table_copy = Path(self.table_dir.name) / "table.bin"
+                shutil.copyfile(self.ngram_table, table_copy)
+                self.cmd += ["--spec-ngram-mod-file", str(table_copy)]
+            log(" ".join(self.cmd))
+            self.p = subprocess.Popen(self.cmd, env=env(self.production), stdout=self.logf, stderr=subprocess.STDOUT, start_new_session=True)
+            t0 = time.time()
+            while time.time() - t0 < 900:
+                if self.p.poll() is not None:
+                    raise RuntimeError(f"llama-server exited early, see {self.logf.name}")
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=2) as r:
+                        if r.status == 200:
+                            return self
+                except (urllib.error.URLError, ConnectionError, TimeoutError):
+                    pass
+                time.sleep(2)
+            raise RuntimeError(f"llama-server did not become healthy, see {self.logf.name}")
+        except BaseException:
+            if hasattr(self, "p") and self.p.poll() is None:
+                os.killpg(self.p.pid, signal.SIGTERM)
+                self.p.wait()
+            self.logf.close()
+            if self.table_dir:
+                self.table_dir.cleanup()
+            raise
 
     def __exit__(self, *exc):
-        os.killpg(self.p.pid, signal.SIGTERM)
         try:
-            self.p.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            os.killpg(self.p.pid, signal.SIGKILL)
-        self.logf.close()
-        time.sleep(3)
+            if self.p.poll() is None:
+                os.killpg(self.p.pid, signal.SIGTERM)
+            try:
+                self.p.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                os.killpg(self.p.pid, signal.SIGKILL)
+                self.p.wait()
+            time.sleep(3)
+        finally:
+            self.logf.close()
+            if self.table_dir:
+                self.table_dir.cleanup()
 
 
 def chat(messages, max_tokens, seed):
@@ -172,6 +209,48 @@ def chat(messages, max_tokens, seed):
         "gen_n": t.get("predicted_n", 0), "gen_tps": t.get("predicted_per_second", 0.0),
         "draft_n": t.get("draft_n", 0), "draft_acc": t.get("draft_n_accepted", 0),
         "content": msg.get("content") or "",
+    }
+
+
+def post_json(path, body):
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=3600) as r:
+        return json.loads(r.read())
+
+
+def chat_stream(messages, max_tokens, seed):
+    body = {"messages": messages, "max_tokens": max_tokens, "seed": seed, "stream": True,
+            "stream_options": {"include_usage": True}, **SAMPLING}
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/chat/completions", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    t0 = time.perf_counter()
+    ttft = None
+    timings = None
+    done = False
+    with urllib.request.urlopen(req, timeout=3600) as r:
+        for line in r:
+            if not line.startswith(b"data: "):
+                continue
+            data = line[6:].strip()
+            if data == b"[DONE]":
+                done = True
+                break
+            chunk = json.loads(data)
+            if "timings" in chunk:
+                timings = chunk["timings"]
+            for choice in chunk.get("choices", []):
+                delta = choice.get("delta", {})
+                if ttft is None and any(delta.get(k) for k in ("content", "reasoning_content", "tool_calls")):
+                    ttft = time.perf_counter() - t0
+    if not done or ttft is None or timings is None:
+        raise RuntimeError("stream ended without a generated token, final timings, or [DONE]")
+    return {
+        "ttft_s": ttft, "wall_s": time.perf_counter() - t0,
+        "prompt_n": timings["prompt_n"], "cache_n": timings["cache_n"],
+        "prompt_tps": timings["prompt_per_second"],
+        "gen_n": timings["predicted_n"], "gen_tps": timings["predicted_per_second"],
+        "draft_n": timings.get("draft_n", 0), "draft_acc": timings.get("draft_n_accepted", 0),
     }
 
 
@@ -257,7 +336,7 @@ def test_cache(a, out, extra):
 
 def test_parallel(a, out, extra):
     res = {}
-    for np_ in [1, 3]:
+    for np_ in ([1, 2] if a.production else [1, 3]):
         with Server(a, out, f"np{np_}", ["-np", str(np_), "--kv-unified"] + extra):
             chat([{"role": "user", "content": "hi"}], 16, 1)
             prompts = [DECODE_TASKS[i % len(DECODE_TASKS)][1]() for i in range(6)]
@@ -271,12 +350,68 @@ def test_parallel(a, out, extra):
     return res
 
 
+def context_messages(depth, sequence):
+    unit = system_prompt(25000)
+    prefix = f"Depth {depth}, sequence {sequence}. Reference code:\n"
+    user = {"role": "user", "content": "Describe this code in one sentence."}
+    chars = depth * 4
+    for _ in range(8):
+        text = (unit * (chars // len(unit) + 1))[:chars]
+        messages = [{"role": "system", "content": prefix + text}, user]
+        prompt = post_json("/apply-template", {"messages": messages})["prompt"]
+        count = len(post_json("/tokenize", {"content": prompt, "add_special": True})["tokens"])
+        if abs(count - depth) <= max(128, depth // 100):
+            return messages
+        chars = max(1, int(chars * depth / count))
+    raise RuntimeError(f"could not build a {depth}-token chat prompt (last count: {count})")
+
+
+def test_long_context(a, out, extra):
+    res = {}
+    with Server(a, out, "long-context", extra):
+        chat([{"role": "user", "content": "hi"}], 16, 1)
+        for depth in LONG_DEPTHS:
+            messages = context_messages(depth, "single")
+            cold = chat_stream(messages, 128, 100 + depth)
+            warm = chat_stream(messages[:-1] + [{"role": "user", "content": "Name one function from this code."}], 128, 100 + depth)
+            for name, sample in (("cold", cold), ("warm", warm)):
+                if abs(sample["prompt_n"] + sample["cache_n"] - depth) > max(256, depth // 50):
+                    raise RuntimeError(f"{depth}-token {name} request used {sample['prompt_n'] + sample['cache_n']} tokens")
+            res[str(depth)] = {"cold": cold, "warm": warm}
+            log(f"  depth {depth:6d}: cold {cold['prompt_n']:6d} processed, {cold['ttft_s']:7.2f}s TTFT, "
+                f"{cold['prompt_tps']:7.1f} pp t/s; warm {warm['cache_n']:6d} cached, {warm['ttft_s']:7.2f}s TTFT")
+
+            if depth <= 128000 and a.production:
+                prompts = [context_messages(depth, f"parallel-{i}") for i in range(2)]
+                t0 = time.perf_counter()
+                with concurrent.futures.ThreadPoolExecutor(2) as ex:
+                    rows = list(ex.map(lambda ip: chat_stream(ip[1], 128, 200 + depth + ip[0]), enumerate(prompts)))
+                wall = time.perf_counter() - t0
+                for sample in rows:
+                    if abs(sample["prompt_n"] + sample["cache_n"] - depth) > max(256, depth // 50):
+                        raise RuntimeError(f"{depth}-token two-slot request used {sample['prompt_n'] + sample['cache_n']} tokens")
+                res[str(depth)]["parallel"] = {
+                    "requests": rows, "end_to_end_tps": sum(r["gen_n"] for r in rows) / wall,
+                }
+                log(f"             two slots: TTFT {rows[0]['ttft_s']:.2f}/{rows[1]['ttft_s']:.2f}s, "
+                    f"end-to-end {res[str(depth)]['parallel']['end_to_end_tps']:.1f} t/s")
+    return res
+
+
 def cmd_run(a):
     out = Path(a.out) / a.label
-    out.mkdir(parents=True, exist_ok=True)
     extra = a.server_extra.split() if a.server_extra else []
     suites = a.suite.split(",")
-    meta = {"label": a.label, "bin": a.bin, "model": a.model, "suites": suites, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    valid = {"micro", "batched", "cache", "decode", "parallel", "long-context"}
+    if set(suites) - valid:
+        raise ValueError(f"unknown suites: {', '.join(sorted(set(suites) - valid))}")
+    if a.ngram_table and "--spec-ngram-mod-file" in extra:
+        raise ValueError("use either --ngram-table or --spec-ngram-mod-file in --server-extra")
+    if a.ngram_table and not Path(a.ngram_table).is_file():
+        raise FileNotFoundError(a.ngram_table)
+    out.mkdir(parents=True, exist_ok=True)
+    meta = {"label": a.label, "bin": a.bin, "model": a.model, "suites": suites, "production": a.production,
+            "ngram_table": a.ngram_table, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
     try:
         meta["version"] = subprocess.run([str(Path(a.bin) / "llama-server"), "--version"], capture_output=True, text=True).stderr.strip()
     except OSError:
@@ -293,15 +428,21 @@ def cmd_run(a):
         log("== prompt cache")
         (out / "cache.json").write_text(json.dumps(test_cache(a, out, extra), indent=1))
     if "decode" in suites:
-        log("== decode (spec greedy)")
-        res = {"greedy": test_decode(a, out, "greedy", extra)}
-        if a.probabilistic:
+        res = {}
+        if not a.production:
+            log("== decode (spec greedy)")
+            res["greedy"] = test_decode(a, out, "greedy", extra)
+        if a.production or a.probabilistic:
             log("== decode (spec probabilistic)")
-            res["probabilistic"] = test_decode(a, out, "prob", extra + ["--spec-draft-sampling", "probabilistic"])
+            prob_extra = extra if a.production else extra + ["--spec-draft-sampling", "probabilistic"]
+            res["probabilistic"] = test_decode(a, out, "prob", prob_extra)
         (out / "decode.json").write_text(json.dumps(res, indent=1))
     if "parallel" in suites:
         log("== parallel slots")
         (out / "parallel.json").write_text(json.dumps(test_parallel(a, out, extra), indent=1))
+    if "long-context" in suites:
+        log("== long context (streamed TTFT, cold/warm, two slots)")
+        (out / "long-context.json").write_text(json.dumps(test_long_context(a, out, extra), indent=1))
     log(f"results in {out}")
 
 
@@ -345,8 +486,8 @@ def cmd_compare(a):
     if da and db:
         print("\ndecode.json")
         for mode in ["greedy", "probabilistic"]:
-            base = da.get(mode) or da.get("greedy")
-            if mode not in db:
+            base = da.get(mode)
+            if base is None or mode not in db:
                 continue
             for task, r in db[mode].items():
                 row(f"{mode} {task} tg t/s", base[task]["gen_tps"], r["gen_tps"])
@@ -355,8 +496,29 @@ def cmd_compare(a):
     if pa and pb:
         print("\nparallel.json")
         for k in pb:
-            row(f"{k} aggregate t/s", pa[k]["agg_tps"], pb[k]["agg_tps"])
-            row(f"{k} per-request t/s", pa[k]["per_req_tps"], pb[k]["per_req_tps"])
+            if k in pa:
+                row(f"{k} aggregate t/s", pa[k]["agg_tps"], pb[k]["agg_tps"])
+                row(f"{k} per-request t/s", pa[k]["per_req_tps"], pb[k]["per_req_tps"])
+    la, lb = load(A, "long-context.json"), load(B, "long-context.json")
+    if la and lb:
+        print("\nlong-context.json")
+        for depth in lb:
+            if depth not in la:
+                continue
+            for mode in ("cold", "warm"):
+                if mode not in la[depth] or mode not in lb[depth]:
+                    continue
+                x, y = la[depth][mode], lb[depth][mode]
+                row(f"{depth} {mode} TTFT s", x["ttft_s"], y["ttft_s"], higher=False)
+                if mode == "cold":
+                    row(f"{depth} cold prompt t/s", x["prompt_tps"], y["prompt_tps"])
+                else:
+                    row(f"{depth} warm cached tokens", x["cache_n"], y["cache_n"])
+            if "parallel" in la[depth] and "parallel" in lb[depth]:
+                x, y = la[depth]["parallel"], lb[depth]["parallel"]
+                row(f"{depth} two-slot max TTFT s", max(r["ttft_s"] for r in x["requests"]),
+                    max(r["ttft_s"] for r in y["requests"]), higher=False)
+                row(f"{depth} two-slot end-to-end t/s", x["end_to_end_tps"], y["end_to_end_tps"])
 
 
 def main():
@@ -374,6 +536,8 @@ def main():
     r.add_argument("--sys-chars", type=int, default=90000, help="size of the shared system prompt (~3.5 chars/token)")
     r.add_argument("--probabilistic", action="store_true", help="also run decode with --spec-draft-sampling probabilistic")
     r.add_argument("--server-extra", default="", help="extra llama-server args, space separated")
+    r.add_argument("--production", action="store_true", help="use startup's context, two-slot, draft, and CUDA settings for server suites")
+    r.add_argument("--ngram-table", help="copy this table for each server start; the original is never modified")
     c = sub.add_parser("compare")
     c.add_argument("a")
     c.add_argument("b")

@@ -14,6 +14,20 @@ Everything these scripts produce from your own data (corpora, ngram tables, trim
 
 Each script's header comment has the full usage.
 
+## Production-like latency and long-context benchmark
+
+`bench_qwen38.py run --production` uses the server startup's 262144-token shared KV pool, two slots capped at 160000 tokens each, probabilistic MTP drafting, draft KV types and CUDA checkpoint settings. It leaves the existing micro and batched suites unchanged. Pass `--mmproj <mmproj.gguf>` to match the multimodal load, and `--ngram-table <table.bin>` to match the primed ngram-mod table. The script copies that table for each server start, so benchmarking never changes the original.
+
+`--suite long-context` measures streamed time to the first generated content or reasoning chunk (not the initial role event), prompt throughput and cache reuse at approximately 8192, 32768, 128000 and 155000 tokens. The script measures actual chat-template token counts before sending each prompt, records processed and cached tokens, and exercises two simultaneous slots through 128000 tokens when `--production` is set. It does not try two 155000-token slots: they cannot both fit in the 262144-token pool. Each depth gets one cold request and one warm request; the context suite is intentionally costly.
+
+```sh
+python3 scripts/fork/bench_qwen38.py run --bin <base-build/bin> --label baseline --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite long-context,decode,parallel
+python3 scripts/fork/bench_qwen38.py run --bin <candidate-build/bin> --label candidate --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite long-context,decode,parallel
+python3 scripts/fork/bench_qwen38.py compare bench-results/baseline bench-results/candidate
+```
+
+Use `--suite decode,parallel` for a shorter decode/concurrency run, or `--server-extra "--spec-type draft-mtp"` on both builds to isolate MTP from ngram-mod. Stop other servers using the GPUs first. Results and server logs go under `bench-results/` and stay private; compare the same suite and flags on both builds.
+
 ## Persistent, primed ngram-mod table
 
 `--spec-ngram-mod-file <table.bin>` loads the ngram-mod table at startup and saves it at clean shutdown, so what the server learned from your automations survives restarts. The file is binary (use `.bin`) and always the full table size; the log line `ngram_mod table loaded from ...: <used>/<size> cells used` shows how full it is.
