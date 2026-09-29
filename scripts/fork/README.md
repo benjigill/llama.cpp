@@ -28,6 +28,18 @@ python3 scripts/fork/bench_qwen38.py compare bench-results/baseline bench-result
 
 Use `--suite decode,parallel` for a shorter decode/concurrency run, or `--server-extra "--spec-type draft-mtp"` on both builds to isolate MTP from ngram-mod. Stop other servers using the GPUs first. Results and server logs go under `bench-results/` and stay private; compare the same suite and flags on both builds.
 
+## Ngram-mod / MTP cost routing
+
+When both `ngram-mod` and `draft-mtp` are the only configured speculators, the server chooses per slot using measured time from drafting through verification and any checkpoint replay, divided by the number of tokens produced. Each source has a 1/8-weight moving estimate; MTP must be at least 5% faster to displace ngram. It tries ngram first, then MTP to establish estimates, and probes the other choice every 32 rounds. An ngram miss still falls through to MTP. The estimates reset with each request and appear in the slot timing log. Other speculative configurations keep their existing ordering and cooldown.
+
+`LLAMA_SPEC_COST_ROUTING=0` restores the old ngram-first policy and low-acceptance cooldown for a same-build A/B run; unset or `1` enables cost routing. Set the variable on the `bench_qwen38.py run` command so its child server inherits it. Compare both decode and parallel suites with the same model, table and seeds; the policy affects decode, not cold prefill.
+
+```sh
+LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode,parallel
+python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite decode,parallel
+python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed bench-results/spec-cost
+```
+
 ## Persistent, primed ngram-mod table
 
 `--spec-ngram-mod-file <table.bin>` loads the ngram-mod table at startup and saves it at clean shutdown, so what the server learned from your automations survives restarts. The file is binary (use `.bin`) and always the full table size; the log line `ngram_mod table loaded from ...: <used>/<size> cells used` shows how full it is.

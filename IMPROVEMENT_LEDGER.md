@@ -62,6 +62,13 @@ Status: `todo`, `in progress`, `done` (link the commit), `dropped` (say why).
 - Result (with #26827, `cache` suite, branch vs master build): prompt tokens re-processed identical (warm 18/16/17, multi-turn 26/22); cold TTFT 19.72 -> 19.89 s (+0.9%), multi-turn TTFT 0.52 -> 0.54 / 0.52 -> 0.52 s, single samples, noise. No regression. The suite does not reach the cases these fix (100k+ MTP prefills under -sm tensor; `--cache-ram` near its limit), so there is no gain to show either. Branch side ran on the d2t copy, which only changes draft steps.
 - Later: #28092 `--cache-disk` (persistent prompt cache across restarts, +1706 lines); wait for it to settle upstream.
 
+### 6. Cost-based ngram-mod / MTP routing (local) - in progress
+
+- The fixed low-acceptance cooldown chooses based only on ngram acceptance, not the latency of a verification round and its checkpoint replay. With both speculators, ngram-mod is always tried before MTP.
+- For the ngram-mod + MTP pair, estimate per-slot time per produced token from complete rounds (draft, verify and replay), using a 1/8-weight moving estimate and a 5% margin before choosing MTP; probe the other source every 32 rounds. A table miss still falls back to MTP. Other speculative configurations keep the old policy.
+- Default-on for the pair; `LLAMA_SPEC_COST_ROUTING=0` provides the unchanged same-build baseline. The per-request cost estimates and round counts are logged with slot timings.
+- Production baseline supplied before this change: probabilistic edit/write/prose 84.4/77.5/75.3 t/s with aggregate acceptance 0.54/0.46/0.45; `-np 1` 73.2 aggregate t/s, `-np 2` 109.0 aggregate t/s. Run the same benchmark and verify source selection, acceptance and latency on the target GPUs before retaining this patch.
+
 ## Considered, not now
 
 - #29208 clamp the draft context to n_ctx_train with --kv-unified - dropped: no effect with our `-c 262144` (n_ctx_seq == n_ctx_train already), and it shrinks the draft KV below the target's in two cases: non-unified `-np N` (draft gets n_ctx/N split N ways) and unified pools above n_ctx_train (slots together can outgrow the clamped draft pool).

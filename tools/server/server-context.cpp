@@ -261,6 +261,50 @@ struct server_slot {
     bool spec_is_replay = false;
     std::mt19937 spec_synth_rng;
 
+    struct spec_cost_sample {
+        double us_per_token = 0.0;
+        uint32_t n = 0;
+
+        void update(int64_t elapsed_us, size_t n_accepted) {
+            const double cost = (double) elapsed_us / (n_accepted + 1);
+            us_per_token = n == 0 ? cost : (7.0 * us_per_token + cost) / 8.0;
+            n++;
+        }
+    };
+
+    spec_cost_sample spec_cost_ngram;
+    spec_cost_sample spec_cost_mtp;
+    uint32_t spec_cost_rounds = 0;
+    int64_t spec_cost_start_us = 0;
+    common_speculative_type spec_cost_source = COMMON_SPECULATIVE_TYPE_NONE;
+
+    bool spec_prefer_mtp() {
+        if (spec_cost_ngram.n == 0) {
+            return false;
+        }
+        if (spec_cost_mtp.n == 0) {
+            return true;
+        }
+        const bool prefer_mtp = spec_cost_mtp.us_per_token < 0.95 * spec_cost_ngram.us_per_token;
+        return ++spec_cost_rounds % 32 == 0 ? !prefer_mtp : prefer_mtp;
+    }
+
+    void spec_record_cost(size_t n_accepted) {
+        if (spec_cost_start_us == 0) {
+            return;
+        }
+        const int64_t elapsed_us = ggml_time_us() - spec_cost_start_us;
+        GGML_ASSERT(elapsed_us > 0);
+        if (spec_cost_source == COMMON_SPECULATIVE_TYPE_NGRAM_MOD) {
+            spec_cost_ngram.update(elapsed_us, n_accepted);
+        } else {
+            GGML_ASSERT(spec_cost_source == COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+            spec_cost_mtp.update(elapsed_us, n_accepted);
+        }
+        spec_cost_start_us = 0;
+        spec_cost_source = COMMON_SPECULATIVE_TYPE_NONE;
+    }
+
     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
     std::unique_ptr<const server_task> task;
@@ -373,6 +417,11 @@ struct server_slot {
         SLT_DBG(*this, "%s", "\n");
 
         spec_is_replay = false;
+        spec_cost_ngram = {};
+        spec_cost_mtp = {};
+        spec_cost_rounds = 0;
+        spec_cost_start_us = 0;
+        spec_cost_source = COMMON_SPECULATIVE_TYPE_NONE;
 
         last_nl_pos    = 0;
         generated_text = "";
@@ -697,6 +746,11 @@ struct server_slot {
                     draft_ratio, n_draft_accepted, n_draft_total, mean_acc_len);
             SLT_TRC(*this,
                     "     acc per pos = (%s)\n", acceptance_rates_per_pos.c_str());
+        }
+
+        if (spec_cost_ngram.n + spec_cost_mtp.n > 0) {
+            SLT_INF(*this, "spec cost routing: ngram %.1f us/token (%u rounds), MTP %.1f us/token (%u rounds)\n",
+                    spec_cost_ngram.us_per_token, spec_cost_ngram.n, spec_cost_mtp.us_per_token, spec_cost_mtp.n);
         }
 
         common_speculative_print_stats(spec);
@@ -1279,9 +1333,18 @@ private:
 
         // try speculative decoding
         if (ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
+            bool enable_cost_routing = true;
+            if (const char * env = getenv("LLAMA_SPEC_COST_ROUTING")) {
+                const std::string value(env);
+                if (value != "0" && value != "1") {
+                    SRV_ERR("%s", "LLAMA_SPEC_COST_ROUTING must be 0 or 1\n");
+                    return false;
+                }
+                enable_cost_routing = value == "1";
+            }
             try {
                 params_base.speculative.ngram_mod.n_vocab = llama_vocab_n_tokens(vocab);
-                spec.reset(common_speculative_init(params_base.speculative, params_base.n_parallel));
+                spec.reset(common_speculative_init(params_base.speculative, params_base.n_parallel, enable_cost_routing));
             } catch (const std::exception & e) {
                 SRV_ERR("failed to initialize speculative decoding context: %s\n", e.what());
                 if (params_base.speculative.has_synth()) {
@@ -3097,8 +3160,12 @@ private:
                             /* .result   = */ &slot.spec_draft,
                             /* .result_q = */ spec_reject ? &slot.spec_draft_q : nullptr,
                             /* .sampling = */ spec_reject ? &slot.task->params.sampling : nullptr,
+                            /* .prefer_mtp = */ common_speculative_cost_routing_enabled(spec.get()) && slot.spec_prefer_mtp(),
                         };
 
+                        if (common_speculative_cost_routing_enabled(spec.get())) {
+                            slot.spec_cost_start_us = ggml_time_us();
+                        }
                         drafting.push_back(&slot);
                     }
                 }
@@ -3116,6 +3183,12 @@ private:
         iterate(drafting, [&](server_slot & slot) {
             auto & draft = slot.spec_draft;
             auto & ckpt  = slot.spec_ckpt;
+
+            if (slot.spec_cost_start_us != 0) {
+                const auto type = common_speculative_get_last_type(spec.get(), slot.id);
+                slot.spec_cost_source = type == COMMON_SPECULATIVE_TYPE_NGRAM_MOD ?
+                    type : COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+            }
 
             slot.stats.n_draft_tokens += draft.size();
 
@@ -3164,6 +3237,8 @@ private:
         iterate(generating, [&](server_slot & slot) {
             slot.handle_last_sampled_token(batch);
         });
+
+        const int32_t n_generation_tokens = batch.size();
 
         // process in chunks of params.n_batch
         int32_t n_batch  = llama_n_batch(ctx_tgt);
@@ -3728,6 +3803,12 @@ private:
                 }
             });
         }
+
+        if (batch.size() > n_generation_tokens) {
+            iterate(generating, [&](server_slot & slot) {
+                slot.spec_cost_start_us = 0;
+            });
+        }
     }
 
     // returns true = success ; false = retry with smaller batch size
@@ -3961,6 +4042,8 @@ private:
 
             slot.stats.update_gen_last();
 
+            slot.spec_record_cost(0);
+
             completion_token_output result;
             result.tok          = id;
             result.text_to_send = common_token_to_piece(slot.ctx_tgt, result.tok, accept_special_token(slot, result.tok));
@@ -4080,6 +4163,7 @@ private:
             // update how many tokens out of those tested were accepted
             slot.stats.n_draft_accepted += n_accepted;
             slot.stats.n_draft_verif_steps += 1;
+            slot.spec_record_cost(n_accepted);
 
             auto & n_accepted_per_pos = slot.n_accepted_per_pos;
             if (n_accepted_per_pos.empty()) {

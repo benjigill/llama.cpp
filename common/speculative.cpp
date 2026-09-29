@@ -1939,6 +1939,8 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
     // shared across all sequences
     common_ngram_mod mod;
 
+    bool cost_routing = false;
+
     // enable trace logging if LLAMA_TRACE is set
     const bool verbose;
 
@@ -2090,7 +2092,11 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
         }
 
         // keep indexing, but let the lower priority speculators (e.g. MTP) draft for a while
-        if (sinfo.n_cooldown > 0) {
+        if (dparams.prefer_mtp && cost_routing) {
+            return;
+        }
+
+        if (!cost_routing && sinfo.n_cooldown > 0) {
             sinfo.n_cooldown--;
             return;
         }
@@ -2144,7 +2150,7 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
     }
 
     void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) override {
-        if (is_other) {
+        if (is_other || cost_routing) {
             return;
         }
 
@@ -2322,6 +2328,8 @@ struct common_speculative {
     std::vector<common_speculative_impl *> impl_last;
 
     std::vector<double> synth_probs;
+
+    bool cost_routing = false;
 };
 
 static common_ngram_map get_common_ngram_map(
@@ -2748,7 +2756,7 @@ common_speculative_output_limits common_speculative_get_output_limits(
 
 // initialization of the speculative decoding system
 //
-common_speculative * common_speculative_init(common_params_speculative & params, uint32_t n_seq) {
+common_speculative * common_speculative_init(common_params_speculative & params, uint32_t n_seq, bool enable_cost_routing) {
     // Compute the implementations to use based on the config and their order of preference
     std::vector<common_speculative_config> configs = {}; // list of speculative configs to try
     {
@@ -2858,11 +2866,20 @@ common_speculative * common_speculative_init(common_params_speculative & params,
         return nullptr;
     }
 
+    const bool cost_routing = enable_cost_routing && impls.size() == 2 &&
+        impls[0]->type == COMMON_SPECULATIVE_TYPE_NGRAM_MOD &&
+        impls[1]->type == COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+    if (cost_routing) {
+        static_cast<common_speculative_impl_ngram_mod *>(impls[0].get())->cost_routing = true;
+        SPC_INF("%s", "ngram-mod/MTP cost routing enabled\n");
+    }
+
     common_speculative_ptr result(new common_speculative {
         /* .dparams     = */ common_speculative_draft_params_vec(n_seq),
         /* .impls       = */ std::move(impls),
         /* .impl_last   = */ std::vector<common_speculative_impl *>(n_seq, nullptr),
         /* .synth_probs = */ {},
+        /* .cost_routing = */ cost_routing,
     });
 
     const int32_t n_max_configured = common_speculative_n_max(&params);
@@ -2908,6 +2925,15 @@ common_speculative_draft_params & common_speculative_get_draft_params(
     GGML_ASSERT(seq_id < (llama_seq_id) spec->dparams.size());
 
     return spec->dparams[seq_id];
+}
+
+bool common_speculative_cost_routing_enabled(const common_speculative * spec) {
+    return spec && spec->cost_routing;
+}
+
+enum common_speculative_type common_speculative_get_last_type(const common_speculative * spec, llama_seq_id seq_id) {
+    GGML_ASSERT(spec && seq_id >= 0 && seq_id < (llama_seq_id) spec->impl_last.size());
+    return spec->impl_last[seq_id] ? spec->impl_last[seq_id]->type : COMMON_SPECULATIVE_TYPE_NONE;
 }
 
 void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, const llama_tokens & prompt) {
@@ -2956,6 +2982,12 @@ void common_speculative_draft(common_speculative * spec) {
 
         if (n_drafting == 0) {
             return;
+        }
+    }
+
+    for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) dparams.size(); ++seq_id) {
+        if (dparams[seq_id].drafting) {
+            spec->impl_last[seq_id] = nullptr;
         }
     }
 
