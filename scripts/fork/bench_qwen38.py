@@ -193,9 +193,10 @@ class Server:
                 self.table_dir.cleanup()
 
 
-def chat(messages, max_tokens, seed, greedy_check=False):
+def chat(messages, max_tokens, seed, greedy_check=False, reasoning_budget=None):
     body = {"messages": messages, "max_tokens": max_tokens, "seed": seed, "stream": False,
-            **SAMPLING, **({"temperature": 0.0} if greedy_check else {})}
+            **SAMPLING, **({"temperature": 0.0} if greedy_check else {}),
+            **({"reasoning_budget_tokens": reasoning_budget} if reasoning_budget is not None else {})}
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     t0 = time.time()
@@ -214,6 +215,7 @@ def chat(messages, max_tokens, seed, greedy_check=False):
     }
     if greedy_check:
         output = {"message": msg, "finish_reason": res["choices"][0]["finish_reason"]}
+        result["finish_reason"] = output["finish_reason"]
         result["output_hash"] = hashlib.sha256(json.dumps(output, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
         result["field_hashes"] = {
             field: hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
@@ -314,12 +316,14 @@ def test_decode(a, out, name, extra):
     with Server(a, out, name, extra):
         chat([{"role": "user", "content": "hi"}], 16, 1)  # warmup
         for task, prompt in DECODE_TASKS:
-            rows = [chat([{"role": "user", "content": prompt()}], a.max_tokens, 1000 + i, a.greedy_check) for i in range(a.reps)]
+            rows = [chat([{"role": "user", "content": prompt()}], a.max_tokens, 1000 + i, a.greedy_check, a.greedy_reasoning_budget) for i in range(a.reps)]
             res[task] = summarize(rows)
             if a.greedy_check:
                 res[task]["hashes"] = [r["output_hash"] for r in rows]
                 res[task]["field_hashes"] = [r["field_hashes"] for r in rows]
                 res[task]["nonempty_content"] = sum(bool(r["content"]) for r in rows)
+                res[task]["completed"] = sum(r["finish_reason"] in ("stop", "tool_calls") for r in rows)
+                res[task]["visible_completed"] = sum(bool(r["content"]) and r["finish_reason"] in ("stop", "tool_calls") for r in rows)
             log(f"  [{name}] {task:<6} tg {res[task]['gen_tps']:6.1f} t/s  accept {res[task]['accept']:.2f}")
     return res
 
@@ -428,13 +432,16 @@ def cmd_run(a):
         raise ValueError("--reps must be positive")
     if a.greedy_check and suites != ["decode"]:
         raise ValueError("--greedy-check requires --suite decode")
+    if a.greedy_reasoning_budget is not None and (not a.greedy_check or a.greedy_reasoning_budget < 0):
+        raise ValueError("--greedy-reasoning-budget requires --greedy-check and a nonnegative value")
     if a.ngram_table and "--spec-ngram-mod-file" in extra:
         raise ValueError("use either --ngram-table or --spec-ngram-mod-file in --server-extra")
     if a.ngram_table and not Path(a.ngram_table).is_file():
         raise FileNotFoundError(a.ngram_table)
     out.mkdir(parents=True, exist_ok=True)
     meta = {"label": a.label, "bin": a.bin, "model": a.model, "suites": suites, "production": a.production,
-            "greedy_check": a.greedy_check,
+            "greedy_check": a.greedy_check, "greedy_reasoning_budget": a.greedy_reasoning_budget,
+            "max_tokens": a.max_tokens,
             "ngram_table": a.ngram_table, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
     try:
         meta["version"] = subprocess.run([str(Path(a.bin) / "llama-server"), "--version"], capture_output=True, text=True).stderr.strip()
@@ -492,6 +499,11 @@ def row(name, x, y, unit="", higher=True):
 
 def cmd_compare(a):
     A, B = a.a, a.b
+    ma, mb = load(A, "meta.json") or {}, load(B, "meta.json") or {}
+    if ma.get("greedy_reasoning_budget") != mb.get("greedy_reasoning_budget"):
+        raise ValueError("greedy reasoning budgets differ")
+    if "max_tokens" in ma and "max_tokens" in mb and ma["max_tokens"] != mb["max_tokens"]:
+        raise ValueError("max token limits differ")
     print(f"{'':36} {Path(A).name:>10} {Path(B).name:>10}  delta")
     for f in ["micro.json", "batched.json"]:
         ra, rb = load(A, f), load(B, f)
@@ -511,6 +523,7 @@ def cmd_compare(a):
             row(f"multiturn{i} ttft s", x["prompt_ms"] / 1000, y["prompt_ms"] / 1000, higher=False)
     da, db = load(A, "decode.json"), load(B, "decode.json")
     mismatched_outputs = 0
+    incomplete_outputs = 0
     if da and db:
         if ("greedy-check" in da) != ("greedy-check" in db):
             raise ValueError("both runs must use --greedy-check to compare greedy output")
@@ -529,11 +542,16 @@ def cmd_compare(a):
                     matched = sum(a == b for a, b in zip(x, y))
                     mismatched_outputs += len(x) - matched
                     print(f"  {mode} {task} outputs match: {matched}/{len(x)}")
+                    if ma.get("greedy_reasoning_budget") is not None and ("field_hashes" not in base[task] or "field_hashes" not in r):
+                        raise ValueError("bounded greedy checks require field hashes from both runs")
                     if "field_hashes" in base[task] and "field_hashes" in r:
                         for field in ("content", "reasoning_content", "tool_calls", "finish_reason"):
                             field_matched = sum(a[field] == b[field] for a, b in zip(base[task]["field_hashes"], r["field_hashes"]))
                             print(f"  {mode} {task} {field} matches: {field_matched}/{len(x)}")
                         print(f"  {mode} {task} nonempty content: {base[task]['nonempty_content']}/{len(x)} vs {r['nonempty_content']}/{len(y)}")
+                        if ma.get("greedy_reasoning_budget") is not None:
+                            print(f"  {mode} {task} completed: {base[task]['completed']}/{len(x)} vs {r['completed']}/{len(y)}")
+                            incomplete_outputs += len(x) + len(y) - base[task]["visible_completed"] - r["visible_completed"]
     pa, pb = load(A, "parallel.json"), load(B, "parallel.json")
     if pa and pb:
         print("\nparallel.json")
@@ -561,8 +579,8 @@ def cmd_compare(a):
                 row(f"{depth} two-slot max TTFT s", max(r["ttft_s"] for r in x["requests"]),
                     max(r["ttft_s"] for r in y["requests"]), higher=False)
                 row(f"{depth} two-slot end-to-end t/s", x["end_to_end_tps"], y["end_to_end_tps"])
-    if mismatched_outputs:
-        raise SystemExit(f"{mismatched_outputs} greedy responses differ; inspect before retaining the change")
+    if mismatched_outputs or incomplete_outputs:
+        raise SystemExit(f"{mismatched_outputs} greedy responses differ, {incomplete_outputs} lack visible completed answers; inspect before retaining the change")
 
 
 def main():
@@ -583,6 +601,7 @@ def main():
     r.add_argument("--production", action="store_true", help="use startup's context, two-slot, draft, and CUDA settings for server suites")
     r.add_argument("--ngram-table", help="copy this table for each server start; the original is never modified")
     r.add_argument("--greedy-check", action="store_true", help="with --suite decode, use temp 0 and compare response digests without saving text")
+    r.add_argument("--greedy-reasoning-budget", type=int, help="with --greedy-check, limit reasoning per request to reach visible answers")
     c = sub.add_parser("compare")
     c.add_argument("a")
     c.add_argument("b")

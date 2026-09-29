@@ -34,18 +34,18 @@ When both `ngram-mod` and `draft-mtp` are the only configured speculators, the s
 
 The fixed ngram-first policy and low-acceptance cooldown remain the default (unset or `LLAMA_SPEC_COST_ROUTING=0`); `LLAMA_SPEC_COST_ROUTING=1` opts into experimental cost routing. Set the variable on the `bench_qwen38.py run` command so its child server inherits it. Compare both decode and parallel suites with the same model, table and seeds; the policy affects decode, not cold prefill.
 
-Repeat the A/B runs in alternating order before interpreting small changes, especially for `-np 2`. The `--reps` flag repeats decode requests but not the six-request parallel suite. To check greedy correctness, run `--suite decode --greedy-check` with each policy and compare the results. This sends temperature 0 requests and stores hashes of complete responses and separate content, reasoning, tool-call and finish-reason hashes, not response text. `compare` reports exact and per-field match counts and fails if any complete responses differ. A content match is not meaningful when both responses have empty content; the comparison also reports how many responses had nonempty content. An exact match is a useful control, not a distribution test at temperature 1.
+Repeat the A/B runs in alternating order before interpreting small changes, especially for `-np 2`. The `--reps` flag repeats decode requests but not the six-request parallel suite. To check greedy correctness, run `--suite decode --greedy-check` with each policy and compare the results. This sends temperature 0 requests and stores hashes of complete responses and separate content, reasoning, tool-call and finish-reason hashes, not response text. `compare` reports exact and per-field match counts and fails if any complete responses differ. With the production reasoning budget and 768-token response limit, all nine fixed-policy responses and all nine cost-policy responses ended before visible content; matching empty content hashes do not validate answers. Use `--greedy-reasoning-budget 128 --max-tokens 2048` to limit reasoning for this check only. The comparison then also requires visible, completed answers and refuses to compare different budgets or token limits. This shorter reasoning workload is a control, not a correctness check of the full production reasoning trace or a distribution test at temperature 1.
 
 ```sh
 LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode,parallel
 LLAMA_SPEC_COST_ROUTING=1 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode,parallel
 python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed bench-results/spec-cost
-LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed-check --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode --greedy-check
-LLAMA_SPEC_COST_ROUTING=1 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost-check --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode --greedy-check
-python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed-check bench-results/spec-cost-check
+LLAMA_SPEC_COST_ROUTING=0 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-fixed-final --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode --greedy-check --greedy-reasoning-budget 128 --max-tokens 2048
+LLAMA_SPEC_COST_ROUTING=1 python3 scripts/fork/bench_qwen38.py run --bin build/bin --label spec-cost-final --model "$M" --mmproj "$MP" --production --ngram-table "$NG" --suite decode --greedy-check --greedy-reasoning-budget 128 --max-tokens 2048
+python3 scripts/fork/bench_qwen38.py compare bench-results/spec-fixed-final bench-results/spec-cost-final
 ```
 
-If greedy output differs, rerun each policy with a new label and compare it against itself before interpreting the cross-policy difference. Existing greedy results have only the complete-response hashes; rerun both policies with the current script for the per-field breakdown. Leave cost routing disabled for production until it is validated.
+If greedy output differs, rerun each policy with a new label and compare it against itself before interpreting the cross-policy difference. Increase `--max-tokens` on both runs if the comparison reports unfinished answers. Leave cost routing disabled for production until it is validated.
 
 ## Persistent, primed ngram-mod table
 
