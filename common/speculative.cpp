@@ -2141,7 +2141,8 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
         // compute acceptance fraction if we have a recorded draft length
         if (sinfo.n_draft_last > 0) {
             const double f_acc = (double)n_accepted / (double)sinfo.n_draft_last;
-            if (f_acc < 0.25) {
+            // a long draft that fails after 8+ tokens still beats MTP, do not count it as low
+            if (f_acc < 0.25 && n_accepted < 8) {
                 sinfo.n_low++;
                 if (sinfo.n_low >= 5) {
                     // resetting the shared table does not help: the next draft re-adds the whole
