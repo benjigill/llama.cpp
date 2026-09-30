@@ -89,6 +89,9 @@ enum common_speculative_type common_speculative_get_last_type(const common_specu
 void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, const llama_tokens & prompt);
 
 // process the batch and update the internal state of the speculative context
+bool common_speculative_process(common_speculative * spec, const common_batch & batch);
+
+// legacy llama_batch input, converted with common_batch_from_llama_batch()
 bool common_speculative_process(common_speculative * spec, const llama_batch & batch);
 
 // generate drafts for the sequences specified with `common_speculative_get_draft_params`

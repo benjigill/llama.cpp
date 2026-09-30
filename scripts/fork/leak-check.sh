@@ -8,7 +8,7 @@
 set -euo pipefail
 
 generic='(/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|/media/[A-Za-z0-9._-]+|/mnt/[A-Za-z0-9._-]+|[A-Za-z]:\\Users\\|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})'
-allow='(users\.noreply\.github\.com|@ggml\.ai|example\.(com|org)|@anthropic\.com)'
+allow='(users\.noreply\.github\.com|@ggml\.ai|example\.(com|org)|@anthropic\.com|@pytest\.)'
 
 patterns_file="$(git rev-parse --git-dir)/info/leak-patterns"
 
