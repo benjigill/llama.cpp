@@ -273,6 +273,7 @@ Never commit local usernames, home or mount paths, hostnames, emails, API keys, 
 
 Keep this list current. One line per patch: upstream PR (or `local`), short name, why we carry it.
 
+- #27161 mixed FP8/NVFP4 compressed-tensors conversion - preserve packed NVFP4 weights and dequantize per-channel FP8 layers, including optional `--fp8-as-q8`, for Qwen3.8 NVFP4 checkpoints; locally retain shared output-head scale sidecars in Qwen MTP-only exports
 - #28265 qwen35 ssm_out 2D - one mat-mul instead of n_seqs mat-vecs; faster decode with -np > 1
 - #28992 server prompt cache lookups - stop skipping cache loads for shorter-prefix/empty slots
 - #27694 rejection-sampling verification for MTP - higher draft acceptance at temp > 0; needs `--spec-draft-sampling probabilistic`
