@@ -14,6 +14,16 @@ Everything these scripts produce from your own data (corpora, ngram tables, trim
 
 Each script's header comment has the full usage.
 
+## Mixed FP8/NVFP4 conversion
+
+The HF converter supports compressed-tensors checkpoints with mixed per-channel FP8 and packed NVFP4 groups. NVFP4 weights are repacked directly into GGUF without re-quantization; their global scales are preserved as separate tensors. FP8 weights are dequantized and written using the selected `--outtype`.
+
+```sh
+python3 convert_hf_to_gguf.py <checkpoint-dir> --outfile <model.gguf> --outtype bf16
+```
+
+Add `--fp8-as-q8` to store only the FP8-origin weights as Q8_0 instead of BF16. This adds re-quantization error but reduces their memory footprint; the NVFP4 weights stay unchanged. There is no `--outtype nvfp4`: the converter detects packed NVFP4 weights automatically, and `--outtype` controls the other weights. Unsupported mixed formats or non-channel FP8 strategies are rejected.
+
 ## Production-like latency and long-context benchmark
 
 `bench_qwen38.py run --production` uses the server startup's 262144-token shared KV pool, two slots capped at 160000 tokens each, probabilistic MTP drafting, draft KV types and CUDA checkpoint settings. It leaves the existing micro and batched suites unchanged. Pass `--mmproj <mmproj.gguf>` to match the multimodal load, and `--ngram-table <table.bin>` to match the primed ngram-mod table. The script copies that table for each server start, so benchmarking never changes the original.
