@@ -205,7 +205,7 @@ static size_t ggml_backend_meta_dev_n_devs(ggml_backend_dev_t meta_dev) {
     return meta_dev_ctx->simple_devs.size();
 }
 
-static ggml_backend_dev_t ggml_backend_meta_dev_simple_dev(ggml_backend_dev_t meta_dev, size_t index) {
+ggml_backend_dev_t ggml_backend_meta_dev_simple_dev(ggml_backend_dev_t meta_dev, size_t index) {
     GGML_ASSERT(ggml_backend_dev_is_meta(meta_dev));
     const ggml_backend_meta_device_context * meta_dev_ctx = (const ggml_backend_meta_device_context *) meta_dev->context;
     GGML_ASSERT(index < meta_dev_ctx->simple_devs.size());
@@ -1645,6 +1645,76 @@ static void ggml_backend_meta_buffer_get_tensor(ggml_backend_buffer_t buffer, co
             GGML_ABORT("fatal error");
         }
     }
+}
+
+bool ggml_backend_meta_buffer_gather_tensor(const ggml_tensor * src, ggml_tensor * dst) {
+    if (!ggml_backend_buffer_is_meta(src->buffer) || ggml_backend_buffer_is_meta(dst->buffer) ||
+            src->type != GGML_TYPE_F32 || !ggml_is_contiguous(src) || !ggml_is_contiguous(dst)) {
+        return false;
+    }
+
+    const ggml_backend_meta_split_state ss = ggml_backend_meta_get_split_state(src, /*assume_sync =*/ false);
+    if (ss.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+        const ggml_tensor * simple_src = ggml_backend_meta_buffer_simple_tensor(src, 0);
+        if (!simple_src || !ggml_are_same_layout(simple_src, dst)) {
+            return false;
+        }
+        ggml_backend_tensor_copy(simple_src, dst);
+        return true;
+    }
+    const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(src->buffer);
+    if (ss.axis > GGML_BACKEND_SPLIT_AXIS_0 && ss.axis < GGML_MAX_DIMS && src->ne[ss.axis] == 1) {
+        for (size_t j = 0; j < n_bufs; ++j) {
+            const ggml_tensor * shard = ggml_backend_meta_buffer_simple_tensor(src, j);
+            if (shard && ggml_are_same_layout(shard, dst)) {
+                ggml_backend_tensor_copy(shard, dst);
+                return true;
+            }
+        }
+        return false;
+    }
+    if (ss.axis != GGML_BACKEND_SPLIT_AXIS_0 || ss.n_segments != 1 || ss.nr[0] != 1) {
+        return false;
+    }
+
+    int64_t n_cols = 0;
+    for (size_t j = 0; j < n_bufs; ++j) {
+        const ggml_tensor * shard = ggml_backend_meta_buffer_simple_tensor(src, j);
+        if (!shard || shard->type != src->type || !ggml_is_contiguous(shard) ||
+                shard->ne[0] != ss.ne[j] || ggml_nrows(shard) != ggml_nrows(src)) {
+            return false;
+        }
+        n_cols += shard->ne[0];
+    }
+    if (n_cols != src->ne[0]) {
+        return false;
+    }
+
+    // Copy each vocabulary slice into its full-row offset on the destination device.
+    size_t column_offset = 0;
+    for (size_t j = 0; j < n_bufs; ++j) {
+        const ggml_tensor * shard = ggml_backend_meta_buffer_simple_tensor(src, j);
+        const size_t row_bytes = shard->ne[0] * sizeof(float);
+        if (row_bytes == 0) {
+            continue;
+        }
+        ggml_tensor src_row = *shard;
+        src_row.view_src = nullptr;
+        src_row.view_offs = 0;
+        for (int d = 1; d < GGML_MAX_DIMS; ++d) {
+            src_row.ne[d] = 1;
+            src_row.nb[d] = row_bytes;
+        }
+        ggml_tensor dst_row = src_row;
+        dst_row.buffer = dst->buffer;
+        for (int64_t row = 0; row < ggml_nrows(src); ++row) {
+            src_row.data = (char *) shard->data + row * shard->nb[1];
+            dst_row.data = (char *) dst->data + row * dst->nb[1] + column_offset;
+            ggml_backend_tensor_copy(&src_row, &dst_row);
+        }
+        column_offset += row_bytes;
+    }
+    return true;
 }
 
 static bool ggml_backend_meta_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {

@@ -492,6 +492,10 @@ void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor
         return;
     }
 
+    if (ggml_backend_buffer_is_meta(src->buffer) && ggml_backend_meta_buffer_gather_tensor(src, dst)) {
+        return;
+    }
+
     if (ggml_backend_buffer_is_host(src->buffer)) {
         ggml_backend_tensor_set(dst, src->data, 0, ggml_nbytes(src));
     } else if (ggml_backend_buffer_is_host(dst->buffer)) {

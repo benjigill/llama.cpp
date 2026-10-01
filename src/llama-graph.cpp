@@ -1485,6 +1485,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     rope_type        (hparams.rope_type),
     sched            (params.sched),
     backend_cpu      (params.backend_cpu),
+    backend_sampling (params.backend_sampling),
     cvec             (params.cvec),
     loras            (params.loras),
     mctx             (params.mctx),
@@ -3788,6 +3789,7 @@ void llm_graph_context::build_sampling() const {
         return;
     }
 
+    const int sampling_node_start = ggml_graph_n_nodes(gf);
     std::array<ggml_tensor *, 2> outs;
     outs[0] = res->t_logits;
 
@@ -3875,6 +3877,12 @@ void llm_graph_context::build_sampling() const {
                 outs[1] = data.candidates;
                 ggml_build_forward_select(gf, outs.data(), outs.size(), i_out);
             }
+        }
+    }
+
+    if (backend_sampling) {
+        for (int i = sampling_node_start; i < ggml_graph_n_nodes(gf); ++i) {
+            ggml_backend_sched_set_tensor_backend(sched, ggml_graph_node(gf, i), backend_sampling);
         }
     }
 

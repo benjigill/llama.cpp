@@ -357,6 +357,8 @@ private:
     bool sched_need_reserve = true;
 
     ggml_backend_t backend_cpu = nullptr;
+    ggml_backend_dev_t sampling_device = nullptr;
+    ggml_backend_t backend_sampling = nullptr;
     std::vector<ggml_backend_ptr> backends;
 
     // training

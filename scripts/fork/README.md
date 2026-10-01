@@ -38,6 +38,18 @@ python3 scripts/fork/bench_qwen38.py compare bench-results/baseline bench-result
 
 Use `--suite decode,parallel` for a shorter decode/concurrency run, or `--server-extra "--spec-type draft-mtp"` on both builds to isolate MTP from ngram-mod. Stop other servers using the GPUs first. Results and server logs go under `bench-results/` and stay private; compare the same suite and flags on both builds.
 
+## Tensor-split MTP GPU top-k
+
+`LLAMA_MTP_GPU_SAMPLING=1` opts into experimental MTP draft top-k offload under `--split-mode tensor`. The target sampler is unchanged. The draft context gathers its complete F32 logits onto the first GPU in the meta device and runs the existing top-k stage there, returning candidate IDs and logits to the CPU. Temperature, random selection, `p_min`, and rejection verification keep their existing behavior.
+
+Contiguous vocabulary-split logits use per-device slice copies; replicated logits, including the expanded d2t logits of a trimmed embedded MTP head, copy from one replica. CUDA uses device/peer copies when available; unavailable peer copies retain the backend's host-staging fallback. Unsupported layouts retain the existing copy fallback. Models with suppressed vocabulary tokens, non-GPU devices, unsupported GPU top-k operations, or sampler chains other than a single top-k stage retain CPU sampling with a warning. The existing draft backend-sampling option must also be enabled.
+
+```sh
+LLAMA_MTP_GPU_SAMPLING=1 build/bin/llama-server -m <model.gguf> --split-mode tensor --spec-type draft-mtp --spec-draft-sampling probabilistic
+```
+
+This is not validated on dual-GPU CUDA yet. Keep it disabled by default. Compare against `LLAMA_MTP_GPU_SAMPLING=0` with identical prompts, seeds, cache settings, and draft lengths. Check both full and trimmed draft heads and both one and two slots, including greedy outputs, probabilistic acceptance, and generated tokens per second. The target context can still print the tensor-split CPU-sampling warning; the MTP context prints `experimental MTP GPU top-k on ... enabled`. An offload-failure warning means the draft sampler is using the CPU.
+
 ## Ngram-mod / MTP cost routing
 
 When both `ngram-mod` and `draft-mtp` are the only configured speculators, the server chooses per slot using measured time from drafting through verification and any checkpoint replay, divided by the number of tokens produced. Each source has a 1/8-weight moving estimate; MTP must be at least 5% faster to displace ngram. It tries ngram first, then MTP to establish estimates, and probes the other choice every 32 rounds. An ngram miss still falls through to MTP. The estimates reset with each request and appear in the slot timing log. Other speculative configurations keep their existing ordering and cooldown.

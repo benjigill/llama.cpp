@@ -1,4 +1,7 @@
 #include "ggml.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
+#include "ggml-cpp.h"
 #include "llama.h"
 
 #ifdef NDEBUG
@@ -73,6 +76,135 @@ static llama_token sample_dist(llama_sampler * sampler, const std::vector<float>
     GGML_ASSERT(cur_p.selected >= 0);
     GGML_ASSERT((size_t) cur_p.selected < cur_p.size);
     return cur_p.data[cur_p.selected].id;
+}
+
+static void test_meta_logits_gather(ggml_backend_dev_t device) {
+    GGML_ASSERT(device);
+    ggml_backend_dev_t devices[] = { device, device };
+    static ggml_backend_meta_split_state layouts[] = {
+        { GGML_BACKEND_SPLIT_AXIS_0, { 13, 18 }, { 1 }, 1 },
+        { GGML_BACKEND_SPLIT_AXIS_0, {  0, 31 }, { 1 }, 1 },
+        { GGML_BACKEND_SPLIT_AXIS_0, { 31,  0 }, { 1 }, 1 },
+        { GGML_BACKEND_SPLIT_AXIS_MIRRORED, { 0 }, { 1 }, 1 },
+    };
+    auto split_state = [](const ggml_tensor *, void * userdata) {
+        return *static_cast<ggml_backend_meta_split_state *>(userdata);
+    };
+    ggml_backend_ptr backend(ggml_backend_dev_init(device, nullptr));
+    GGML_ASSERT(backend);
+    for (auto & layout : layouts) {
+        auto * meta = ggml_backend_meta_device(devices, 2, split_state, &layout);
+        GGML_ASSERT(ggml_backend_meta_dev_simple_dev(meta, 0) == device);
+        for (int rows : { 1, 3 }) {
+            for (bool view : { false, true }) {
+                ggml_init_params init = { 16 * ggml_tensor_overhead() + ggml_graph_overhead_custom(16, false), nullptr, true };
+                ggml_context_ptr src_ctx(ggml_init(init));
+                ggml_context_ptr dst_ctx(ggml_init(init));
+                const int base_rows = rows + (view ? 2 : 0);
+                ggml_tensor * base = ggml_new_tensor_2d(src_ctx.get(), GGML_TYPE_F32, 31, base_rows);
+                ggml_tensor * src = view ? ggml_view_2d(src_ctx.get(), base, 31, rows, base->nb[1], base->nb[1]) : base;
+                ggml_tensor * dst = ggml_dup_tensor(dst_ctx.get(), src);
+                std::copy(std::begin(src->nb), std::end(src->nb), dst->nb);
+                ggml_tensor * top_k = ggml_top_k(dst_ctx.get(), dst, 10);
+                if (!ggml_backend_supports_op(backend.get(), top_k)) {
+                    printf("Skipping meta logits gather on %s: top-k is not supported\n", ggml_backend_name(backend.get()));
+                    return;
+                }
+                ggml_cgraph * graph = ggml_new_graph_custom(dst_ctx.get(), 16, false);
+                ggml_build_forward_expand(graph, top_k);
+                ggml_backend_buffer_ptr src_buf(ggml_backend_alloc_ctx_tensors_from_buft(src_ctx.get(), ggml_backend_dev_buffer_type(meta)));
+                ggml_backend_buffer_ptr dst_buf(ggml_backend_alloc_ctx_tensors(dst_ctx.get(), backend.get()));
+                GGML_ASSERT(src_buf && dst_buf);
+                std::vector<float> values(31 * base_rows);
+                for (int r = 0; r < base_rows; ++r) {
+                    for (int c = 0; c < 31; ++c) {
+                        values[r * 31 + c] = c < 28 ? float((c * 17 + r * 7) % 31) : -INFINITY;
+                    }
+                }
+                ggml_backend_tensor_set(base, values.data(), 0, values.size() * sizeof(float));
+                ggml_backend_tensor_copy(src, dst);
+                std::vector<float> actual(31 * rows);
+                ggml_backend_tensor_get(dst, actual.data(), 0, actual.size() * sizeof(float));
+                const auto expected = values.begin() + (view ? 31 : 0);
+                GGML_ASSERT(std::equal(actual.begin(), actual.end(), expected));
+                GGML_ASSERT(ggml_backend_graph_compute(backend.get(), graph) == GGML_STATUS_SUCCESS);
+                std::vector<int32_t> selected(10 * rows);
+                ggml_backend_tensor_get(top_k, selected.data(), 0, selected.size() * sizeof(int32_t));
+                for (int r = 0; r < rows; ++r) {
+                    std::vector<llama_token_data> candidates;
+                    for (int c = 0; c < 31; ++c) {
+                        candidates.push_back({ c, actual[r * 31 + c], 0.0f });
+                    }
+                    llama_token_data_array data = { candidates.data(), candidates.size(), -1, false };
+                    llama_sampler * sampler = llama_sampler_init_top_k(10);
+                    llama_sampler_apply(sampler, &data);
+                    GGML_ASSERT(data.size == 10);
+                    std::vector<int32_t> expected_ids;
+                    for (size_t k = 0; k < data.size; ++k) {
+                        GGML_ASSERT(data.data[k].logit == expected[r * 31 + data.data[k].id]);
+                        expected_ids.push_back(data.data[k].id);
+                    }
+                    std::sort(expected_ids.begin(), expected_ids.end());
+                    std::sort(selected.begin() + r * 10, selected.begin() + (r + 1) * 10);
+                    GGML_ASSERT(std::equal(expected_ids.begin(), expected_ids.end(), selected.begin() + r * 10));
+                    llama_sampler_free(sampler);
+                }
+
+                if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    ggml_init_params graph_init = { 64 * ggml_tensor_overhead() + ggml_graph_overhead_custom(64, false), nullptr, true };
+                    ggml_context_ptr graph_ctx(ggml_init(graph_init));
+                    ggml_backend_ptr meta_backend(ggml_backend_dev_init(meta, nullptr));
+                    ggml_backend_ptr cpu_backend(ggml_backend_dev_init(ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU), nullptr));
+                    GGML_ASSERT(meta_backend && cpu_backend);
+                    ggml_backend_t backends[] = { meta_backend.get(), backend.get(), cpu_backend.get() };
+                    ggml_backend_sched_ptr sched(ggml_backend_sched_new(backends, nullptr, 3, 64, false, true));
+                    GGML_ASSERT(sched);
+                    ggml_tensor * logits = ggml_scale(graph_ctx.get(), src, 1.0f);
+                    ggml_cgraph * sampling_graph = ggml_new_graph_custom(graph_ctx.get(), 64, false);
+                    ggml_build_forward_expand(sampling_graph, logits);
+                    ggml_backend_sched_set_tensor_backend(sched.get(), logits, meta_backend.get());
+                    const int sampling_start = ggml_graph_n_nodes(sampling_graph);
+                    ggml_tensor * padded = ggml_pad(graph_ctx.get(), logits, 0, 1, 0, 0);
+                    llama_sampler * chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+                    llama_sampler_chain_add(chain, llama_sampler_init_top_k(10));
+                    if (!chain->iface->backend_init(chain, ggml_backend_dev_buffer_type(device), rows) ||
+                            !ggml_backend_supports_op(backend.get(), padded)) {
+                        printf("Skipping meta sampling graph on %s: sampler or padding is not supported\n", ggml_backend_name(backend.get()));
+                        llama_sampler_free(chain);
+                        return;
+                    }
+                    std::vector<llama_sampler_data> data(rows);
+                    for (int r = 0; r < rows; ++r) {
+                        data[r] = { ggml_view_1d(graph_ctx.get(), padded, 31, r * padded->nb[1]), nullptr, nullptr, nullptr };
+                        chain->iface->backend_apply(chain, graph_ctx.get(), sampling_graph, &data[r]);
+                        ggml_build_forward_expand(sampling_graph, data[r].logits);
+                        ggml_set_output(data[r].logits);
+                        ggml_set_output(data[r].candidates);
+                    }
+                    for (int n = sampling_start; n < ggml_graph_n_nodes(sampling_graph); ++n) {
+                        ggml_backend_sched_set_tensor_backend(sched.get(), ggml_graph_node(sampling_graph, n), backend.get());
+                    }
+                    GGML_ASSERT(ggml_backend_sched_alloc_graph(sched.get(), sampling_graph));
+                    for (int iteration = 0; iteration < 2; ++iteration) {
+                        GGML_ASSERT(ggml_backend_sched_graph_compute(sched.get(), sampling_graph) == GGML_STATUS_SUCCESS);
+                        for (int r = 0; r < rows; ++r) {
+                            int32_t ids[10];
+                            float candidate_logits[10];
+                            ggml_backend_tensor_get(data[r].candidates, ids, 0, sizeof(ids));
+                            ggml_backend_tensor_get(data[r].logits, candidate_logits, 0, sizeof(candidate_logits));
+                            for (int k = 0; k < 10; ++k) {
+                                GGML_ASSERT(ids[k] >= 0 && ids[k] < 28);
+                                GGML_ASSERT(candidate_logits[k] == expected[r * 31 + ids[k]]);
+                            }
+                            std::sort(std::begin(ids), std::end(ids));
+                            GGML_ASSERT(std::equal(std::begin(ids), std::end(ids), selected.begin() + r * 10));
+                        }
+                    }
+                    llama_sampler_free(chain);
+                }
+            }
+        }
+    }
 }
 
 static void test_dist_singleton_rng() {
@@ -338,6 +470,11 @@ static void test_perf() {
 int main(void) {
     ggml_time_init();
 
+    llama_backend_init();
+    test_meta_logits_gather(ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU));
+    if (auto * gpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) {
+        test_meta_logits_gather(gpu);
+    }
     test_dist_singleton_rng();
 
     test_temp({0.1f, 0.2f, 0.3f, 0.4f}, {0.1f, 0.2f, 0.3f, 0.4f}, 1.0f);

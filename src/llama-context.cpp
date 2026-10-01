@@ -251,6 +251,21 @@ llama_context::llama_context(
     cparams.n_outputs_max_per_seq = params.n_outputs_max_per_seq == 0 ?
             cparams.n_outputs_max : std::min(params.n_outputs_max_per_seq, cparams.n_outputs_max);
 
+    const char * mtp_gpu_sampling = getenv("LLAMA_MTP_GPU_SAMPLING");
+    if (mtp_gpu_sampling && atoi(mtp_gpu_sampling) == 1 &&
+            cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP && model.split_mode() == LLAMA_SPLIT_MODE_TENSOR &&
+            !model.devices.empty() && model.devices[0].is_meta) {
+        auto * dev = ggml_backend_meta_dev_simple_dev(model.devices[0].dev, 0);
+        int32_t n_suppress = 0;
+        llama_vocab_get_suppress_tokens(&model.vocab, &n_suppress);
+        if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU && n_suppress == 0) {
+            sampling_device = dev;
+            LLAMA_LOG_WARN("%s: experimental MTP GPU top-k on %s enabled\n", __func__, ggml_backend_dev_name(dev));
+        } else {
+            LLAMA_LOG_WARN("%s: MTP GPU top-k requires a GPU and no suppressed vocabulary tokens; using CPU sampler\n", __func__);
+        }
+    }
+
     // Initialize backend samplers here so they are part of the sampling graph
     // before the reserve passes run later in this function. This avoids a later
     // re-reserve when graph nodes change.
@@ -336,6 +351,14 @@ llama_context::llama_context(
                 throw std::runtime_error(format("failed to initialize %s backend", ggml_backend_dev_name(dev.dev)));
             }
             backends.emplace_back(backend);
+        }
+
+        if (sampling_device) {
+            backend_sampling = ggml_backend_dev_init(sampling_device, nullptr);
+            if (!backend_sampling) {
+                throw std::runtime_error(format("failed to initialize %s sampling backend", ggml_backend_dev_name(sampling_device)));
+            }
+            backends.emplace_back(backend_sampling);
         }
 
         // add ACCEL backends (such as BLAS)
@@ -1281,7 +1304,7 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
 
     LLAMA_LOG_DEBUG("%s: seq_id = %d, sampler = %p\n", __func__, (int) seq_id, (void *) sampler);
 
-    if (sampler && model.split_mode() == LLAMA_SPLIT_MODE_TENSOR) {
+    if (sampler && model.split_mode() == LLAMA_SPLIT_MODE_TENSOR && !sampling_device) {
         static bool warned = false;
         if (!warned) {
             LLAMA_LOG_WARN("%s: backend sampling not supported with SPLIT_MODE_TENSOR; using CPU\n", __func__);
@@ -1301,9 +1324,24 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
         llama_sampler_chain_n(sampler) > 0;
 
     if (sampler && can_offload) {
-        auto * buft = ggml_backend_dev_buffer_type(model.dev_output());
+        if (sampling_device && (llama_sampler_chain_n(sampler) != 1 ||
+                strcmp(llama_sampler_name(llama_sampler_chain_get(sampler, 0)), "top-k") != 0)) {
+            LLAMA_LOG_WARN("%s: tensor-split MTP offload supports only a top-k chain; using CPU sampler\n", __func__);
+            if (sampling.samplers.erase(seq_id) > 0) {
+                sched_need_reserve = true;
+            }
+            return false;
+        }
+        auto * buft = ggml_backend_dev_buffer_type(sampling_device ? sampling_device : model.dev_output());
 
-        sampler->iface->backend_init(sampler, buft, cparams.n_outputs_max_per_seq);
+        const bool supported = sampler->iface->backend_init(sampler, buft, cparams.n_outputs_max_per_seq);
+        if (sampling_device && !supported) {
+            LLAMA_LOG_WARN("%s: MTP GPU top-k not supported on %s; using CPU sampler\n", __func__, ggml_backend_dev_name(sampling_device));
+            if (sampling.samplers.erase(seq_id) > 0) {
+                sched_need_reserve = true;
+            }
+            return false;
+        }
 
         sampling.samplers[seq_id] = sampler;
 
@@ -2564,6 +2602,7 @@ llm_graph_params llama_context::graph_params(
         /*.gtype       =*/ gtype,
         /*.sched       =*/ sched.get(),
         /*.backend_cpu =*/ backend_cpu,
+        /*.backend_sampling =*/ backend_sampling,
         /*.cvec        =*/ cvec.get(),
         /*.loras       =*/ loras.get(),
         /*.mctx        =*/ mctx,
