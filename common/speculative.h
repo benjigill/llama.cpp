@@ -46,6 +46,9 @@ struct common_speculative_output_limits {
 common_speculative_output_limits common_speculative_get_output_limits(
         int32_t n_batch, int32_t n_parallel, int32_t n_draft);
 
+// return true if the target and draft models have compatible vocabs
+bool common_speculative_are_compatible(const llama_model * model_tgt, const llama_model * model_dft);
+
 common_speculative * common_speculative_init(common_params_speculative & params, uint32_t n_seq, bool cost_routing = false);
 
 void common_speculative_free(common_speculative * spec);
@@ -73,8 +76,9 @@ struct common_speculative_draft_params {
     // candidate distribution per drafted token; set it to make draft-simple and draft-mtp sample
     std::vector<std::vector<llama_token_data>> * result_q = nullptr;
 
-    // the target's config; only temp and seed are read, to retune the draft sampler
-    const common_params_sampling * sampling = nullptr;
+    // the target's temp and seed, read only when the drafter samples probabilistically
+    float    temp = 1.0f;
+    uint32_t seed = LLAMA_DEFAULT_SEED;
 
     // skip ngram-mod for this sequence and try MTP instead
     bool prefer_mtp = false;
@@ -90,9 +94,6 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
 
 // process the batch and update the internal state of the speculative context
 bool common_speculative_process(common_speculative * spec, const common_batch & batch);
-
-// legacy llama_batch input, converted with common_batch_from_llama_batch()
-bool common_speculative_process(common_speculative * spec, const llama_batch & batch);
 
 // generate drafts for the sequences specified with `common_speculative_get_draft_params`
 void common_speculative_draft(common_speculative * spec);

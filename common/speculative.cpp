@@ -38,29 +38,26 @@ static void spec_retune(
         std::vector<common_params_sampling> & cfg,
         const llama_model * model,
         llama_seq_id seq_id,
-        common_speculative_draft_params & dp,
-        bool probabilistic) {
-    // greedy drafting leaves no candidates behind, so the verifier falls back to sample-and-match
-    if (!probabilistic) {
-        dp.result_q = nullptr;
-    }
-
-    if (dp.result_q == nullptr || dp.sampling == nullptr) {
-        return;
-    }
-
+        float temp,
+        uint32_t seed) {
     if (cfg.size() != smpls.size()) {
+        const size_t n_old = cfg.size();
         cfg.resize(smpls.size());
+
+        // the initial sampler has no temperature, so no request may match the cache and skip a rebuild
+        for (size_t i = n_old; i < cfg.size(); ++i) {
+            cfg[i].temp = NAN;
+        }
     }
 
     auto & cur = cfg[seq_id];
 
-    if (cur.temp == dp.sampling->temp && cur.seed == dp.sampling->seed) {
+    if (cur.temp == temp && cur.seed == seed) {
         return;
     }
 
-    cur.temp = dp.sampling->temp;
-    cur.seed = dp.sampling->seed;
+    cur.temp = temp;
+    cur.seed = seed;
 
     common_params_sampling sparams;
     sparams.no_perf  = false;
@@ -107,7 +104,7 @@ struct common_speculative_config {
             const common_params_speculative & p = common_params_speculative{}) : type(t), params(p) {}
 };
 
-static bool common_speculative_are_compatible(
+bool common_speculative_are_compatible(
     const llama_model * model_tgt,
     const llama_model * model_dft) {
     const llama_vocab * vocab_tgt = llama_model_get_vocab(model_tgt);
@@ -369,7 +366,15 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 
             n_drafting++;
             drafting[seq_id] = true;
-            spec_retune(smpls, smpls_cfg, llama_get_model(ctx_dft), seq_id, dp, params.probabilistic);
+            // greedy drafting leaves no candidates behind, so the verifier falls back to sample-and-match
+            if (!params.probabilistic) {
+                dp.result_q = nullptr;
+            }
+
+            // result_q is only set when the caller wants rejection, so it also gates the retune
+            if (dp.result_q) {
+                spec_retune(smpls, smpls_cfg, llama_get_model(ctx_dft), seq_id, dp.temp, dp.seed);
+            }
 
             // a reset reseeds the chain, which breaks probabilistic drafting
             if (!dp.result_q) {
@@ -1659,7 +1664,15 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
             n_drafting++;
             drafting[seq_id] = true;
-            spec_retune(smpls, smpls_cfg, llama_get_model(ctx_dft), seq_id, dp, params.probabilistic);
+            // greedy drafting leaves no candidates behind, so the verifier falls back to sample-and-match
+            if (!params.probabilistic) {
+                dp.result_q = nullptr;
+            }
+
+            // result_q is only set when the caller wants rejection, so it also gates the retune
+            if (dp.result_q) {
+                spec_retune(smpls, smpls_cfg, llama_get_model(ctx_dft), seq_id, dp.temp, dp.seed);
+            }
 
             // a reset reseeds the chain, which breaks probabilistic drafting
             if (!dp.result_q) {
@@ -2304,9 +2317,6 @@ struct common_speculative_impl_ngram_cache : public common_speculative_impl {
 struct common_speculative {
     common_speculative_draft_params_vec dparams;
 
-    // the target context, used to convert legacy llama_batch inputs
-    llama_context * ctx_tgt = nullptr;
-
     // list of implementations to use and their states
     std::vector<std::unique_ptr<common_speculative_impl>> impls;
 
@@ -2685,7 +2695,7 @@ common_speculative_init_result::common_speculative_init_result(
         model_path = params.speculative.draft.mparams.path;
         LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
 
-        llama_model * model_dft = llama_model_load_from_file(params.model.path.c_str(), mparams);
+        llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
         if (model_dft == NULL) {
             LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
             return;
@@ -2862,7 +2872,6 @@ common_speculative * common_speculative_init(common_params_speculative & params,
 
     common_speculative_ptr result(new common_speculative {
         /* .dparams     = */ common_speculative_draft_params_vec(n_seq),
-        /* .ctx_tgt     = */ params.draft.ctx_tgt,
         /* .impls       = */ std::move(impls),
         /* .impl_last   = */ std::vector<common_speculative_impl *>(n_seq, nullptr),
         /* .synth_probs = */ {},
@@ -2935,17 +2944,6 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
     }
 }
 
-bool common_speculative_process(common_speculative * spec, const llama_batch & batch) {
-    if (spec == nullptr) {
-        return true;
-    }
-
-    // ngram-only setups have no target context, they do not read the batch anyway
-    const common_batch tmp = spec->ctx_tgt ? common_batch_from_llama_batch(spec->ctx_tgt, batch) : common_batch();
-
-    return common_speculative_process(spec, tmp);
-}
-
 bool common_speculative_process(common_speculative * spec, const common_batch & batch) {
     bool result = true;
 
@@ -3015,6 +3013,11 @@ void common_speculative_draft(common_speculative * spec) {
                     if (!result.empty() && (int) result.size() > dp.n_max) {
                         SPC_DBG("truncating draft to %d tokens\n", dp.n_max);
                         result.resize(dp.n_max);
+
+                        // trim the candidates only if the drafter produced them (n-gram drafters do not)
+                        if (dp.result_q && !dp.result_q->empty()) {
+                            dp.result_q->resize(dp.n_max);
+                        }
                     }
                 }
 

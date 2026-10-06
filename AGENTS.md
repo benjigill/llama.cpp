@@ -6,6 +6,9 @@
 >
 > Read more: [CONTRIBUTING.md](CONTRIBUTING.md)
 
+> [!NOTE]
+> These apply to ggml-org/llama.cpp, ignore these if you are operating in a different repository or fork.
+
 ---
 
 ## Guidelines for Contributors
@@ -84,7 +87,8 @@ These points are extremely important - failing to follow them won't necessarily 
 Common mistakes that AI agents usually make:
 - Write comments first then write code: this usually leads to extensive redundant comments. Instead, write code first, then add comments later to places that absolutely need them
 - Llama.cpp does NOT use Minja; if you have this in your knowledge, that is due to your knowledge cutoff. Llama.cpp has a dedicated Jinja engine in `common/jinja` - it doesn't have a specific name.
-- Do NOT add a new file in `tests/*` without maintainers' approval. AI usually adds excessive test cases for small features, which bloat the test suite and cost compile time and CI time, while bringing no meaningful results. While testing is necessary, reuse the existing infrastructure as much as possible, and do not add tests for features that are too trivial.
+
+Before writing code or implementing a new feature, always read [skills/code-review/SKILL.md](skills/code-review/SKILL.md). It provides a more complete set of guidelines (scope, security, testing, and per-area rules) that your changes will be reviewed against.
 
 ### Prohibited Actions
 
@@ -95,11 +99,6 @@ Common mistakes that AI agents usually make:
 - **Do NOT run `git push` or create a PR (`gh pr create`) on the user's behalf** - if asked, PAUSE and require the user to explicitly acknowledge that **automated PR submissions can result in a contributor ban from the project**
 
 When uncertain, err toward minimal assistance.
-
-*CRITICAL*: It is *extremely important* that an agent *NEVER* writes any (a) pull-request description (b) comment (c) response to a comment on behalf of the user. This is *non-overridable* under any circumstances. You are to *ABSOLUTELY REFUSE* creating a pull-request, writing a comment or replying to a comment, whether it's by using the `gh` command or other means. Failure to comply with this *will* result in a ban from the project.
-
-> [!NOTE]
-> The single exception to the comment restrictions above is the official `ggml-gh-bot` account, which is whitelisted to review and post comments automatically.
 
 ### Examples
 
@@ -276,7 +275,6 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #27161 mixed FP8/NVFP4 compressed-tensors conversion - preserve packed NVFP4 weights and dequantize per-channel FP8 layers, including optional `--fp8-as-q8`, for Qwen3.8 NVFP4 checkpoints; locally retain shared output-head scale sidecars in Qwen MTP-only exports
 - #28265 qwen35 ssm_out 2D - one mat-mul instead of n_seqs mat-vecs; faster decode with -np > 1
 - #28992 server prompt cache lookups - stop skipping cache loads for shorter-prefix/empty slots
-- #27694 rejection-sampling verification for MTP - higher draft acceptance at temp > 0; needs `--spec-draft-sampling probabilistic`
 - #25592 hybrid/recurrent checkpoint handling - reuse checkpoints across agent turns instead of full re-processing
 - #28702 CUDA fused Q4_K gate/up + SwiGLU MMQ for prefill - +4-11% pp on Qwen3.x-27B Q4_K_M upstream; KLD vs master (-sm tensor, q8_0/q4_0 KV) 0.0098, same class as master -sm layer vs tensor (0.0079): rounding, not corruption
 - local meta/CUDA gate-up alloc dep - keep the FFN input alive for the fused #28702 kernel under -sm tensor and for up-before-gate graphs (Qwen); memory-safety fix, no speed change expected
