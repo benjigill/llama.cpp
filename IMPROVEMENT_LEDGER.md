@@ -29,7 +29,7 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
   | probabilistic edit / write / prose | 84.82 / 76.04 / 75.71 | 87.05 / 82.53 / 79.33 | 0.56 / 0.45 / 0.46 | 0.55 / 0.49 / 0.47 |
 - 49152 vs 32768: greedy speed the same (within 0.5 t/s), greedy acceptance about halfway back to base (-2% vs -4% relative); probabilistic +2.6 / +8.5 / +4.8% vs +1.9 / +5.2 / +3.7%. Greedy is the clean signal (a trimmed draft can only lose accepted tokens there); the probabilistic acceptance above base (write 0.45 -> 0.49) cannot come from the trim and is sampling noise at temp 1.0, so read the probabilistic gains as roughly +3-5%.
 
-### 2. Row-per-warp GATED_DELTA_NET decode kernel (upstream #22587) - done
+### 2. Row-per-warp GATED_DELTA_NET decode kernel (upstream #22587) - replaced by upstream #30087
 
 - Rewrites the recurrent GDN kernel (one warp per group of output rows).
 - Upstream numbers (RTX 5090): kernel +13-16% at 1-4 tokens (our MTP verify is 4 tokens), +20-50% at 32-1024 tokens; +4-7% pp end to end on Qwen3.5-27B Q4_K_M.
@@ -38,6 +38,7 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - Applied (branch `feat/gdn-row-per-warp`) as a port: the PR predates PDL, cache fusion and our snapshots, so the kernel body was moved into our file with those kept. 55/55 + 7/7 tests pass on both GPUs.
 - Kernel (`test-backend-ops perf`, 5070 Ti, master -> branch): 1 token 2.93 -> 2.91 us (flat), KDA 1 token 3.05 -> 2.94 us; 64 tokens 32h d128 68.56 -> 43.11 us (1.59x), 4h 22.13 -> 19.77 us, KDA 78.62 -> 46.35 us; 256+ tokens identical (chunked kernel).
 - End to end: micro and batched within +-0.4%. Decode moved with acceptance (greedy text differs with the new summation order) and was flat where acceptance was flat, so no decode gain. The gain is on 2-130 token batches that the chunked kernel does not take (short follow-up turns, tool results after a cache hit), which the bench suites barely exercise.
+- Dropped in the 2026-10-08 upstream sync: upstream #30087 (4 state columns per warp) rewrote the same recurrent kernel, so the two cannot both be carried. Upstream reports -33% at 64 tokens 32h d128 and -12% at 1 token on a 4090 vs the old kernel; compare against the 5070 Ti numbers above (`test-backend-ops perf -o GATED_DELTA_NET`) and re-port #22587 only if #30087 loses on our GPUs.
 
 ### 3. Serialize MTP multi-ubatch decode (upstream #26827) - done
 
@@ -84,7 +85,7 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 ## Considered, not now
 
 - #29208 clamp the draft context to n_ctx_train with --kv-unified - dropped: no effect with our `-c 262144` (n_ctx_seq == n_ctx_train already), and it shrinks the draft KV below the target's in two cases: non-unified `-np N` (draft gets n_ctx/N split N ways) and unified pools above n_ctx_train (slots together can outgrow the clamped draft pool).
-- #29187 fused GDN alpha/beta projections - upstream shows +8-16% decode on NVFP4 but 0-4% on Q4_K_M (fused path handles BF16/F16/F32/Q8_0 weights only); touches `gated_delta_net.cu` like #22587 and our chunked patch. Revisit after #22587.
+- #29187 fused GDN alpha/beta projections - upstream shows +8-16% decode on NVFP4 but 0-4% on Q4_K_M (fused path handles BF16/F16/F32/Q8_0 weights only); touches `gated_delta_net.cu` like our chunked patch. Revisit now that the recurrent kernel is upstream's again (#30087).
 
 - #27248 q5 K cache - dropped: keep q8_0 K.
 - #27210 adaptive MTP draft depth - wants `--spec-draft-n-max 12`, i.e. 13 recurrent snapshots per slot in VRAM; at temp 1.0 deep drafts rarely pay off and ngram-mod covers long bursts.
