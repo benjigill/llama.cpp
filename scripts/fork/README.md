@@ -22,7 +22,7 @@ The HF converter supports compressed-tensors checkpoints with mixed per-channel 
 python3 convert_hf_to_gguf.py <checkpoint-dir> --outfile <model.gguf> --outtype bf16
 ```
 
-Add `--fp8-as-q8` to store only the FP8-origin weights as Q8_0 instead of BF16. This adds re-quantization error but reduces their memory footprint; the NVFP4 weights stay unchanged. There is no `--outtype nvfp4`: the converter detects packed NVFP4 weights automatically, and `--outtype` controls the other weights. Unsupported mixed formats or non-channel FP8 strategies are rejected.
+Add `--fp8-as-q8` to store only the FP8-origin weights as Q8_0 instead of BF16. This adds re-quantization error but reduces their memory footprint; the NVFP4 weights stay unchanged. There is no `--outtype nvfp4`: the converter detects packed NVFP4 weights automatically, and `--outtype` controls the other weights. Only NVFP4 plus per-channel FP8 has been tested; other mixed-precision groups are not checked by the converter.
 
 ## Production-like latency and long-context benchmark
 
