@@ -272,7 +272,7 @@ Never commit local usernames, home or mount paths, hostnames, emails, API keys, 
 
 Keep this list current. One line per patch: upstream PR (or `local`), short name, why we carry it.
 
-- #27161 mixed FP8/NVFP4 compressed-tensors conversion - preserve packed NVFP4 weights and dequantize per-channel FP8 layers, including optional `--fp8-as-q8`, for Qwen3.8 NVFP4 checkpoints; locally retain shared output-head scale sidecars in Qwen MTP-only exports
+- local Qwen MTP-only export output-head sidecars - keep the `lm_head` NVFP4/FP8 scale and packed tensors when exporting only the MTP head, so the shared output head converts from Qwen3.8 NVFP4 checkpoints (the mixed FP8/NVFP4 conversion itself is upstream #28636, which replaced our #27161)
 - #28265 qwen35 ssm_out 2D - one mat-mul instead of n_seqs mat-vecs; faster decode with -np > 1
 - #28992 server prompt cache lookups - stop skipping cache loads for shorter-prefix/empty slots
 - #25592 hybrid/recurrent checkpoint handling - reuse checkpoints across agent turns instead of full re-processing
