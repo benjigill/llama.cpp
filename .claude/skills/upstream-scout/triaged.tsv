@@ -1,0 +1,3 @@
+# upstream-scout triage state (see SKILL.md). One row per upstream PR, issue or discussion triaged.
+# verdict: carried | adopt | test | watch | skip ; head: PR head sha when triaged, '-' for issues and discussions
+number	kind	verdict	head	date	note
