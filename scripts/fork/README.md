@@ -7,6 +7,7 @@ Everything these scripts produce from your own data (corpora, ngram tables, trim
 | Script | What it's for |
 | --- | --- |
 | `bench_qwen38.py` | A/B benchmark of two builds or two models (`run`, then `compare`) |
+| `server-risk-checks.py` | Probe long-context recall and per-slot MTP acceptance against a running server |
 | `ngram-corpus.py` | Collect repos, text and chat transcripts into a corpus for an ngram-mod table |
 | `mtp-d2t.py` | Make a model copy whose MTP draft step uses a trimmed vocabulary (faster drafts) |
 | `mmproj-q8_0.py` | Requantize an F16 mmproj (vision projector) GGUF to Q8_0 |
@@ -37,6 +38,38 @@ python3 scripts/fork/bench_qwen38.py compare bench-results/baseline bench-result
 ```
 
 Use `--suite decode,parallel` for a shorter decode/concurrency run, or `--server-extra "--spec-type draft-mtp"` on both builds to isolate MTP from ngram-mod. Stop other servers using the GPUs first. Results and server logs go under `bench-results/` and stay private; compare the same suite and flags on both builds.
+
+## Server stability probes
+
+`server-risk-checks.py` exercises upstream ggml-org/llama.cpp#27756 (silent EOS or lost recall at scattered long-context depths) and ggml-org/llama.cpp#27572 (zero MTP acceptance in a parallel slot). These are reproduction checks, not fixes. Use an idle server with `--slots` enabled and no other clients. Use the original model first, not the d2t copy. The script sends greedy raw completions, pins slot IDs and disables prompt reuse; it does not change or restart the server.
+
+```sh
+bash scripts/get-wikitext-2.sh
+python3 scripts/fork/server-risk-checks.py recall --server http://127.0.0.1:<port> --text wikitext-2-raw/wiki.test.raw
+python3 scripts/fork/server-risk-checks.py parallel --server http://127.0.0.1:<port> --text wikitext-2-raw/wiki.test.raw --rounds 3
+```
+
+The recall probe repeats tokenized corpus text to reach exact prompt depths of 96000, 96519, 100000, 120000 and 140000 tokens, with the needle at 10% and 256 output tokens reserved. Run it with a slot capacity of at least 140256 tokens (e.g. the production 160000 cap), then repeat with speculation disabled to isolate the long-context bug. A missing code is a failed probe, not proof of an engine defect: reasoning can exhaust the response budget, and prompt dependence requires more depths and prompts. `--depths` overrides the depths.
+
+The parallel probe needs exactly two slots (`-np 2`), `--spec-type draft-mtp` without ngram-mod, and `--spec-draft-n-max 3`. Both requests have 4096 actual prompt tokens, so they span multiple ubatches with `-ub 512`; change `--parallel-depth` if needed. It reports each slot's draft and accepted counts over three concurrent rounds. Zero acceptance with at least eight generated and eight drafted tokens flags the reported failure signature; restart with `-np 1` and compare acceptance separately before diagnosing a race.
+
+JSON summaries go to stdout, without response text. Exit codes: 0 = no failure signature observed, 1 = missing needle or zero acceptance, 2 = invalid setup, insufficient drafting, token-count mismatch or request failure. Passing probes do not rule out either intermittent bug.
+
+## Pending CUDA adoption checks
+
+The checkpoint change from ggml-org/llama.cpp#29509 and graph recapture change from ggml-org/llama.cpp#29768 need target-GPU A/B before retention. Build the unchanged baseline and candidate separately with `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DGGML_CUDA_FA_QUANTS=q8_0-q4_0`; use the same model, mmproj, ngram table and environment.
+
+```sh
+cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DGGML_CUDA_FA_QUANTS=q8_0-q4_0 -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+python3 scripts/fork/bench_qwen38.py run --bin <baseline-build/bin> --label scout-base --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite micro,decode,parallel,cache
+python3 scripts/fork/bench_qwen38.py run --bin build/bin --label scout-candidate --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite micro,decode,parallel,cache
+python3 scripts/fork/bench_qwen38.py compare bench-results/scout-base bench-results/scout-candidate
+```
+
+Before the graph A/B, confirm both GPU startup lines report VMM and count `CUDA graph warmup reset` lines in baseline logs from a production-like debug-verbosity run (`-lv 4` or higher). A Release build still logs these lines at debug verbosity. Check again with the candidate; rare baseline resets mean little potential gain. The benchmark sets `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` in production mode, but `new_pool_for_device` still selects the VMM scratch pool when compiled with `GGML_USE_VMM` and the device reports VMM support.
+
+For checkpoint memory, use a long prompt with MTP and inspect `created context checkpoint ... size = ... MiB` logs: size should no longer grow with draft KV length. Exercise warm prefix reuse, a divergent continuation that restores an earlier checkpoint, RAM-cache eviction/reload and slot save/restore; compare processed-token counts and completed greedy answers with baseline. Repeat same-build greedy checks first because the separately tracked MTP hidden-state restore bug can confound cross-build hashes. The updated d2t loader also needs original-vs-trimmed decode/parallel checks, with MTP enabled and disabled.
 
 ## Ngram-mod / MTP cost routing
 
