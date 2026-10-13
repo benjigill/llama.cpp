@@ -1,3 +1,214 @@
 # upstream-scout triage state (see SKILL.md). One row per upstream PR, issue or discussion triaged.
 # verdict: carried | adopt | test | watch | skip ; head: PR head sha when triaged, '-' for issues and discussions
+# last-scan: 2026-10-12 48e985756
 number	kind	verdict	head	date	note
+9648	pr	skip	c9ae1916ec19	2026-10-12	old tensor-parallel draft
+10510	pr	skip	b83cae088c2e	2026-10-12	infill mode, 2024 draft
+11190	pr	skip	8dfe3d8e9731	2026-10-12	build option to drop MMQ/FA
+11557	pr	skip	4c59b04ac8ba	2026-10-12	DeepSeek-R1 FA
+11867	pr	skip	1591f9b8c4cc	2026-10-12	2025 graph overlap draft, stale
+12487	pr	skip	b7d0456c0fc2	2026-10-12	TTS
+16016	pr	skip	d092e2682cc1	2026-10-12	deterministic mode
+16548	pr	skip	04bd26058bd6	2026-10-12	graph plans; changes requested, stale
+16844	pr	skip	61cff1bd4218	2026-10-12	embed gemma graphs
+17034	pr	skip	13b86bbbfc6f	2026-10-12	2025 draft
+18102	pr	skip	128a6c283161	2026-10-12	old Qwen3-Next delta-net kernel; superseded by current GDN kernels
+19294	pr	skip	820ad0d191c3	2026-10-12	ngram-mod score pruning PoC; our fingerprinted table removed the wipe it targets
+19890	disc	skip	-	2026-10-12	MoE bench
+20013	disc	skip	-	2026-10-12	MoE on 7900 XTX
+20147	pr	skip	44a86ee64413	2026-10-12	c++ wrapper backend
+20243	disc	skip	-	2026-10-12	C API
+20375	pr	skip	41e6c8caf4b8	2026-10-12	FA head size 88
+20609	pr	skip	ccea34ba41b3	2026-10-12	MXFP FA CPU reference
+20831	pr	skip	5d0f1659e6f7	2026-10-12	RDNA nwarps for narrow MoE matrices
+21569	disc	skip	-	2026-10-12	DFlash
+21757	pr	skip	1e79a792e03b	2026-10-12	dynamic KV resize
+21761	pr	skip	ec652a52ac61	2026-10-12	NCCL init for single GPU
+21815	pr	skip	13c62e9c6f02	2026-10-12	context shift, not used
+21921	disc	skip	-	2026-10-12	MoE
+21926	disc	skip	-	2026-10-12	Gemma tensor split
+21975	disc	skip	-	2026-10-12	Gemma 4
+22055	pr	skip	a8f38a550fd8	2026-10-12	ngram-cache file, we use ngram-mod
+22432	pr	skip	0f1517d83368	2026-10-12	per-request ngram params
+22448	pr	skip	de73ade30e89	2026-10-12	MMQ bounds as float; +-1% noise
+22466	pr	skip	56bafa1dedf6	2026-10-12	model load time only; changes requested
+22473	disc	skip	-	2026-10-12	Q&A
+22569	pr	skip	0b0f7bd7e3c8	2026-10-12	paged KV draft
+22587	pr	watch	b324c33d6ec0	2026-10-12	row-per-warp GDN; re-port only if upstream #30087 loses on 5070/5070 Ti (test-backend-ops perf -o GATED_DELTA_NET)
+22950	pr	skip	0e7b4b35b018	2026-10-12	auto param fitting; we set the split explicitly
+23037	pr	skip	94ffe8b311cb	2026-10-12	hybrid layer discovery
+23476	pr	skip	19fd13012096	2026-10-12	imatrix with MTP head
+23489	pr	skip	cc7a8e6702e7	2026-10-12	download dedupe
+23577	issue	watch	-	2026-10-12	RISK: per-slot //// corruption after long MTP sessions, -np 2 reports
+23685	pr	skip	c54d684d7af7	2026-10-12	HIP packed Q8_1
+23738	disc	skip	-	2026-10-12	adaptive MTP idea (see #27210)
+24028	pr	skip	0eff81dd592f	2026-10-12	slot checkpoint sidecar file
+24035	pr	skip	920ea56d9daf	2026-10-12	draft since July, overlaps carried #25592; revisit if revived
+24440	issue	skip	-	2026-10-12	Gemma4 MTP + -sm tensor (shared KV)
+24565	pr	skip	46453a976b58	2026-10-12	FA MMA config only for head dim 128; ours is 256
+24566	pr	skip	c1f397431317	2026-10-12	meta view cache experiment; local on-device ckpt patch handles stale views
+24785	pr	skip	3bc301f6a249	2026-10-12	recurrent shrink/expand for prompt cache; overlaps carried #25592
+24804	disc	skip	-	2026-10-12	lossy accept gate
+24850	pr	skip	7e6ffa4546fd	2026-10-12	metrics
+24891	pr	watch	d80022ddc991	2026-10-12	checkpoint invalidation after tool turns; review flags abort->warn and pos vs count mixups; upstream reworked the erase logic since
+25004	pr	skip	7ff2fd83e979	2026-10-12	obsolete: hybrid memory already uses split_equal with the rollback window
+25144	pr	skip	1e408b760863	2026-10-12	vision+MTP fix for 1-axis RoPE drafts; PR says Qwen M-RoPE MTP is unaffected
+25172	disc	skip	-	2026-10-12	Q&A
+25175	disc	skip	-	2026-10-12	GLM
+25198	disc	skip	-	2026-10-12	seed: --spec-draft-p-min with higher n-max; n-max bounded by snapshot VRAM
+25219	disc	skip	-	2026-10-12	draft filter RFC
+25232	pr	skip	c1513652e882	2026-10-12	error message only
+25271	pr	skip	ff9e7673cfa9	2026-10-12	device reset for sleep
+25334	pr	skip	e4ee2d21a8ce	2026-10-12	Ollama GGUF loading
+25357	disc	skip	-	2026-10-12	8GB Gemma MTP head quant sweep
+25479	pr	skip	daec666d1416	2026-10-12	Pascal DP4A
+25489	issue	skip	-	2026-10-12	Windows MoE MTP perf drop, no bisect
+25592	pr	carried	e75a77ab6ce8	2026-10-12	hybrid/recurrent checkpoint handling
+25688	pr	skip	69393170e110	2026-10-12	meta device names
+25718	disc	skip	-	2026-10-12	TCP drafting
+25726	pr	skip	99d24533c735	2026-10-12	adaptive draft length; deeper drafts cost VRAM snapshots (see #27210)
+25818	pr	skip	0429f358451e	2026-10-12	remote speculation over ethernet
+25819	pr	skip	e96c2a41454d	2026-10-12	ngram-mod stuck-loop band-aid, WIP
+25860	pr	skip	3515fafd8131	2026-10-12	DeepSeek V4
+26001	pr	carried	47bed1342851	2026-10-12	chunked GDN prefill; closed unmerged, superseded by #29353 which covers neither K > 1 nor -sm tensor head split; carry is permanent
+26048	pr	skip	8361cdb00f61	2026-10-12	NVFP4 only
+26114	pr	skip	f4ff32243edd	2026-10-12	draft model load
+26159	pr	skip	f1694d2615e4	2026-10-12	NVFP4 MoE
+26184	disc	skip	-	2026-10-12	SYCL
+26248	disc	skip	-	2026-10-12	NCCL Q&A
+26257	issue	skip	-	2026-10-12	mixed 3060/5060 Ti garbled output, likely Vulkan
+26301	pr	skip	e9c355f394ad	2026-10-12	dequant-float mmv for ne11 == 1, default on RDNA3.5 only; our verify is 4 tokens
+26311	pr	skip	359710e393c9	2026-10-12	NVFP4
+26460	pr	skip	8e22b9453061	2026-10-12	FA-disabled path; we run FA on
+26551	pr	skip	d450a63fbff1	2026-10-12	draft filter SDK, 5.8k lines
+26575	pr	skip	272dc4023037	2026-10-12	DFlash/DSpark caps
+26704	pr	skip	94ee2c759734	2026-10-12	CUTLASS MoE prefill MXFP4/NVFP4
+26750	issue	watch	-	2026-10-12	RISK: CUDA MTP acceptance regression, prompt-dependent; compare our acceptance CUDA vs CPU on prose
+26827	pr	carried	53ae1115fa60	2026-10-12	serialize MTP multi-ubatch decode (test pinned to CPU locally)
+26968	pr	skip	90777e2e0904	2026-10-12	-md path
+26977	pr	skip	8ff58903ae53	2026-10-12	MoE MMQ tile widths
+27080	disc	skip	-	2026-10-12	GB10 Q&A
+27081	disc	skip	-	2026-10-12	7900 XTX
+27090	issue	skip	-	2026-10-12	520k YaRN
+27122	issue	watch	-	2026-10-12	RISK: MTP + -sm tensor lockups; we carry #26827; workaround LLAMA_GRAPH_REUSE_DISABLE=1
+27154	disc	skip	-	2026-10-12	gfx1151 MTP + ngram-mod numbers
+27161	pr	skip	8482e5ffd3ce	2026-10-12	closed; replaced by merged #28636
+27164	disc	skip	-	2026-10-12	MTP-only GGUF setup
+27173	pr	watch	fd504f1fefb0	2026-10-12	bundle measured on our exact setup; maintainer asked to split; pieces are perf-research seeds (sched plan pool, meta split memo, allreduce sync, chained MTP drafts)
+27196	pr	skip	dfa2317aa6c9	2026-10-12	logprobs with speculation
+27210	pr	skip	b0d2c5e617be	2026-10-12	adaptive deep MTP drafts need n_rs_seq snapshots per slot in VRAM
+27248	pr	skip	60cddb14430f	2026-10-12	closed upstream; keep q8_0 K
+27267	pr	skip	d0d4ded3253f	2026-10-12	RWKV7
+27281	disc	skip	-	2026-10-12	Q&A
+27290	disc	skip	-	2026-10-12	seed: MTP head quant matched to the target raised acceptance; its PR set is merged or tracked
+27328	pr	skip	86f910021cf9	2026-10-12	NCCL fp32/bf16 threshold env, default unchanged; revisit only if NCCL allreduce is in use
+27329	issue	skip	-	2026-10-12	NVFP4 decode hang
+27330	issue	skip	-	2026-10-12	graphs hang on 5090 Laptop, driver
+27396	pr	skip	bdb246b33629	2026-10-12	draft-model prefill (dflash/eagle3/glm)
+27428	issue	skip	-	2026-10-12	MTP halves pp on layer split; seed: measure MTP catch-up prefill cost under -sm tensor
+27451	pr	carried	5c7018ed7b41	2026-10-12	shared prompt-cache checkpoints (local in-place resize)
+27489	pr	skip	4934f6899bad	2026-10-12	shared compute buffers only for single-device single-seq MTP
+27523	pr	skip	07b17484b356	2026-10-12	RWKV7
+27569	pr	skip	63b61fa45d81	2026-10-12	DFlash draft batch
+27572	issue	watch	-	2026-10-12	RISK: MTP acceptance 0 on one slot under -np 2; user approved parallel reproduction probe in server-risk-checks.py, target results pending (not a fix)
+27618	pr	skip	7c86f42b8509	2026-10-12	dots3note MTP
+27623	issue	skip	-	2026-10-12	single 16GB GPU on WSL/Windows; our long-context suite covers decode at depth
+27641	pr	skip	24c68c4b9693	2026-10-12	tests only
+27692	pr	skip	6eee4a185422	2026-10-12	speculative prefill (prompt compression), 3.3k lines
+27717	issue	skip	-	2026-10-12	n-cpu-moe
+27721	pr	skip	0cc7efed3794	2026-10-12	Pascal graphs
+27736	pr	skip	04df6d959d53	2026-10-12	NVFP4 MTP loader
+27756	issue	watch	-	2026-10-12	RISK: non-monotonic long-context EOS / recall loss; user approved exact-depth recall probe in server-risk-checks.py, target results pending (not a fix)
+27781	pr	skip	4e627fe8bdce	2026-10-12	moot here: qwen35 MTP context has no ctx_other, so is_mem_shared is already false
+27788	pr	skip	55b04c81a7f9	2026-10-12	public C API
+27833	issue	skip	-	2026-10-12	DFlash
+27836	pr	skip	1d8de7c1b0c7	2026-10-12	qwen4exp only
+27858	pr	skip	3286b033c5dc	2026-10-12	DFlash2
+27866	pr	skip	8492c2ecd9ae	2026-10-12	ngram-cache begin(); we use ngram-mod
+27897	pr	skip	02e27633dcdd	2026-10-12	draft-mtp + external -md draft; we do not use -md
+27910	issue	skip	-	2026-10-12	5090 GSP reset, driver
+27917	pr	skip	5b8593b5451e	2026-10-12	GLM MTP
+27950	disc	skip	-	2026-10-12	Flash-Next ROCm
+27954	disc	skip	-	2026-10-12	ROCm bandwidth
+27964	issue	skip	-	2026-10-12	Flash-Next
+28092	pr	watch	f2431a23a2cc	2026-10-12	--cache-disk persistent prompt cache; no review yet, wait for it to settle
+28110	pr	skip	f323a6620636	2026-10-12	acceptance stats only
+28115	issue	skip	-	2026-10-12	KV in RAM
+28117	pr	skip	115fed246ad1	2026-10-12	--no-kv-offload draft
+28118	pr	skip	82bacc5475f0	2026-10-12	on-device spec ckpts without meta fixes; covered by local LLAMA_SPEC_CKPT_ON_DEVICE patch
+28196	issue	skip	-	2026-10-12	perf report: qwen35 decode ~76% of roofline on 5090 Linux; perf-research seed
+28199	disc	skip	-	2026-10-12	Q&A
+28221	pr	skip	b63df384218a	2026-10-12	draft-model load NaN split
+28232	pr	skip	31d304b92f9f	2026-10-12	EOG truncation in spec results; output already correct
+28252	issue	skip	-	2026-10-12	fixed by carried #26827
+28265	pr	carried	c2c3d82c1204	2026-10-12	qwen35 ssm_out 2D
+28277	pr	skip	a2ec6b0fffe9	2026-10-12	server --connect
+28287	disc	skip	-	2026-10-12	CPU FFN offload
+28333	pr	watch	7abbba20a8ac	2026-10-12	zero stale MTP pending_h at pos 0; same root cause as #30141
+28346	pr	skip	1e18a1d8e307	2026-10-12	mmproj/draft weight swap
+28391	pr	skip	7c2e0dea436e	2026-10-12	default spec config; we set explicit config
+28413	pr	skip	b757f0d5cf76	2026-10-12	FP8
+28430	disc	skip	-	2026-10-12	abliterated model
+28442	pr	skip	e302cd772164	2026-10-12	-md draft path
+28473	pr	skip	cd19eda4da81	2026-10-12	per-seq draft cap; per-request n_max is compiled out, n-max 3 already
+28484	issue	skip	-	2026-10-12	RPC
+28512	disc	skip	-	2026-10-12	Flash-Next
+28514	disc	skip	-	2026-10-12	NVFP4 prefill
+28584	disc	skip	-	2026-10-12	MoE
+28588	disc	skip	-	2026-10-12	Flash-Next
+28671	pr	skip	ff2b436762b3	2026-10-12	TOP_K CUB fallback; CCCL >= 3.2 uses DeviceTopK
+28702	pr	carried	7ecad64a5282	2026-10-12	reviewed through this head; our copy is the 09-22 Q4_K-only form; later commits are the stock-MMQ rewrite plus an op-offload fix (n/a without -ot)
+28766	disc	skip	-	2026-10-12	DeepSeek
+28790	issue	skip	-	2026-10-12	Windows build
+28815	pr	skip	eef117ec8d56	2026-10-12	test fixture
+28873	pr	skip	4cc4454a5036	2026-10-12	kv-cache PARTIAL_ONLY; #29509 covers our case
+28879	issue	skip	-	2026-10-12	perplexity monotonicity, informational
+28894	disc	skip	-	2026-10-12	KVMem fork, KV offload window
+28949	pr	skip	1454177f33f8	2026-10-12	embeddings mode
+28967	pr	skip	a50c8f789191	2026-10-12	NCCL multi-node
+28992	pr	carried	94bc965b57b7	2026-10-12	server prompt cache lookups
+29025	pr	skip	5ab8c592346d	2026-10-12	MMVQ partial block clamp; our rows are 256-aligned
+29121	pr	skip	cbea4a40a810	2026-10-12	CPU GDN in place
+29143	pr	adopt	65487104bcd9	2026-10-13	d2t update committed as 91462c21d: load_mtp sidecar gates and dflash scatter asserts; local embedded trim preserved, target model checks pending
+29145	issue	skip	-	2026-10-12	covered by carried #29143
+29174	issue	skip	-	2026-10-12	Flash-Next
+29181	pr	skip	4ffcbaf2aea6	2026-10-12	MoE top-k fusion
+29187	pr	watch	e75c82b7750c	2026-10-12	fused GDN alpha/beta; maintainer hold for generic auto-fusion; only BF16/F16/F32/Q8_0 weights
+29208	pr	skip	5776c325760e	2026-10-12	no effect with -c 262144; shrinks draft KV below target in other cases
+29247	pr	skip	74196df222e7	2026-10-12	RFC fusions
+29253	disc	skip	-	2026-10-12	RPC
+29353	pr	watch	377e111e8ce4	2026-10-12	GDN MMA chunked kernel; gates K == 1 and per-device H_k == 16 (fails under -sm tensor head split); keep #26001 port + local snapshots in front at merge
+29355	pr	skip	857769741daf	2026-10-12	ROCm/RPC draft tuning, single slot
+29463	pr	skip	9bcfbceb4608	2026-10-12	RPC checkpoint offsets; also sets ctx_other on drafts
+29501	issue	skip	-	2026-10-12	Gemma4 assistant
+29509	pr	adopt	b3c27359975e	2026-10-13	committed as 1847c492f: draft KV out of prompt checkpoints; target memory/restore validation pending
+29617	pr	skip	08494e680e85	2026-10-12	props
+29733	pr	skip	1ee76d57fb20	2026-10-12	missing MTP weights warning
+29768	pr	test	f69225ed3e92	2026-10-13	committed as 7ffbd6a71 for testing: stable graph recapture; CUDA build, VMM/reset count and A/B pending
+29783	issue	skip	-	2026-10-12	sm_70
+29796	pr	skip	fc92d666c734	2026-10-12	sync skip gated on device_count == 1
+29930	disc	skip	-	2026-10-12	Flash-Next
+29948	pr	watch	b6e0f03348b5	2026-10-12	maintainer-requested alternative to carried #28702 (interleaved rows); Q4_K -2.5% vs #28702 on GB10; at merge drop #28702 but keep meta alloc dep ba4741198
+30059	pr	skip	03550d187baf	2026-10-12	MoE expert cache
+30071	disc	skip	-	2026-10-12	Flash-Next
+30077	pr	skip	85569bf774b5	2026-10-12	CUDA 12.8 codegen only; we build with 13.x
+30137	pr	watch	d2d35a3d8043	2026-10-12	ref-counted checkpoints; overlaps carried #27451; swap if this merges instead
+30141	pr	watch	2505fa437661	2026-10-12	MTP get_state/set_state for pending_h; our MTP impl lacks it, so h is stale after every checkpoint restore; small acceptance effect, greedy A/B depends on previous request
+30188	pr	skip	d21082be6812	2026-10-12	cache_prompt=false tasks
+30201	pr	skip	da7af57bc231	2026-10-12	checkpoint after last media
+30202	pr	watch	b9e92c439ead	2026-10-12	FA MMA with on-the-fly q4_0/q8_0 KV for 1-8 tokens; requires K and V of the same type, ours are q8_0/q4_0
+30220	pr	skip	73647e8ade6f	2026-10-12	DFlash + mtmd
+30277	pr	skip	928ae7779305	2026-10-12	KDA tensor split
+30278	pr	skip	45208c2ef519	2026-10-12	TQ2_0
+30285	pr	skip	d20f12534f04	2026-10-12	FA head sizes 40/72
+30294	pr	skip	be4292d7485c	2026-10-12	MTP fallback message
+30327	pr	skip	6823010241e5	2026-10-12	graph debug env, no perf change
+30328	disc	skip	-	2026-10-12	single 5060 Ti numbers
+30345	pr	skip	43d674696328	2026-10-12	masked-mode h_nextn row selection, latent in current qwen35 MTP flow per author
+30368	issue	skip	-	2026-10-12	qwen4exp
+30380	pr	skip	87e9dea36f26	2026-10-12	dynamic trimmed draft vocab; we carry d2t trim (#29143 + local)
+30393	pr	skip	ad778127dde2	2026-10-12	vllm decision2 variant
+30394	issue	skip	-	2026-10-12	MoE layer-split MTP launch timeout
+30395	issue	skip	-	2026-10-12	MoE layer-split MTP launch timeout
+30396	issue	skip	-	2026-10-12	MoE layer-split MTP launch timeout
+30397	pr	skip	0d2494b4e33c	2026-10-12	Flash-Next MTP image embds
