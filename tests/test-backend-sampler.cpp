@@ -4,6 +4,7 @@
 #include "common.h"
 #include "sampling.h"
 
+#include "../src/llama-graph.h"
 #include "../src/llama-model.h"
 #include "../src/llama-sampler.h"
 
@@ -101,6 +102,42 @@ static void test_tensor_mtp_d2t(const test_args & args) {
     llama_sampler_chain_add(chain.get(), llama_sampler_init_top_k(10));
     GGML_ASSERT(chain->iface->backend_init(chain.get(), buft, 1));
 
+    // MTP catch-up updates the KV cache without requesting any logits.
+    {
+        llm_graph_result res(128);
+        res.reset();
+        auto * ctx_empty = res.get_ctx();
+        auto * draft_empty = ggml_new_tensor_2d(ctx_empty, GGML_TYPE_F32, n_draft, 0);
+        auto * d2t_empty = ggml_new_tensor_1d(ctx_empty, GGML_TYPE_I32, n_draft);
+        ggml_set_input(draft_empty);
+        ggml_set_input(d2t_empty);
+        auto * logits_empty = ggml_fill(ctx_empty,
+                ggml_new_tensor_3d(ctx_empty, GGML_TYPE_F32, 1, n_vocab, 0), -INFINITY);
+        logits_empty = ggml_set_rows(ctx_empty, logits_empty,
+                ggml_reshape_3d(ctx_empty, draft_empty, 1, n_draft, 0),
+                ggml_reshape_3d(ctx_empty, d2t_empty, n_draft, 1, 1));
+        res.t_logits = ggml_reshape_2d(ctx_empty, logits_empty, n_vocab, 0);
+        ggml_build_forward_expand(res.get_gf(), res.t_logits);
+
+        llm_graph_params params = {};
+        params.arch = LLM_ARCH_QWEN35;
+        params.hparams = model->hparams;
+        params.cparams.n_outputs_max_per_seq = 1;
+        int8_t output_empty[] = {0, 0};
+        params.ubatch.n_tokens = 2;
+        params.ubatch.output = output_empty;
+        params.samplers = {{0, chain.get()}, {1, chain.get()}};
+        params.res = &res;
+        llm_graph_context graph(params);
+        graph.build_sampling();
+
+        ggml_gallocr_ptr alloc_empty(ggml_gallocr_new(buft));
+        GGML_ASSERT(ggml_gallocr_alloc_graph(alloc_empty.get(), res.get_gf()));
+        GGML_ASSERT(ggml_backend_graph_compute(backend.get(), res.get_gf()) == GGML_STATUS_SUCCESS);
+        GGML_ASSERT(res.t_sampled_logits.empty());
+        GGML_ASSERT(res.t_candidates.empty());
+    }
+
     // Match the two-slot d2t scatter, padding, and per-slot row views in the real graph.
     auto * draft = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, n_draft, 2);
     ggml_set_input(draft);
@@ -108,16 +145,30 @@ static void test_tensor_mtp_d2t(const test_args & args) {
     auto * logits = ggml_fill(ctx.get(), ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, 1, n_vocab, 2), -INFINITY);
     logits = ggml_set_rows(ctx.get(), logits, ggml_reshape_3d(ctx.get(), draft, 1, n_draft, 2),
             ggml_reshape_3d(ctx.get(), d2t, n_draft, 1, 1));
-    logits = ggml_pad(ctx.get(), ggml_reshape_2d(ctx.get(), logits, n_vocab, 2), 0, 1, 0, 0);
-    auto * gf = ggml_new_graph(ctx.get());
-    llama_sampler_data data[2] = {};
+    llm_graph_result res(128);
+    res.reset();
+    res.t_logits = ggml_reshape_2d(ctx.get(), logits, n_vocab, 2);
+    llama_seq_id seq_ids[] = {0, 1};
+    llama_seq_id * seq_id[] = {&seq_ids[0], &seq_ids[1]};
+    int8_t output[] = {1, 1};
+    llm_graph_params params = {};
+    params.arch = LLM_ARCH_QWEN35;
+    params.hparams = model->hparams;
+    params.cparams.n_outputs_max_per_seq = 1;
+    params.ubatch.n_tokens = 2;
+    params.ubatch.seq_id = seq_id;
+    params.ubatch.output = output;
+    params.n_outputs = 2;
+    params.samplers = {{0, chain.get()}, {1, chain.get()}};
+    params.res = &res;
+    llm_graph_context graph(params);
+    graph.build_sampling();
+    auto * gf = res.get_gf();
+    GGML_ASSERT(res.t_sampled_logits.size() == 2);
+    GGML_ASSERT(res.t_candidates.size() == 2);
     for (int i = 0; i < 2; ++i) {
-        data[i].logits = ggml_view_1d(ctx.get(), logits, n_vocab, i * logits->nb[1]);
-        chain->iface->backend_apply(chain.get(), ctx.get(), gf, &data[i]);
-        ggml_set_output(data[i].logits);
-        ggml_set_output(data[i].candidates);
-        ggml_build_forward_expand(gf, data[i].logits);
-        ggml_build_forward_expand(gf, data[i].candidates);
+        ggml_set_output(res.t_sampled_logits[i]);
+        ggml_set_output(res.t_candidates[i]);
     }
 
     ggml_gallocr_ptr alloc(ggml_gallocr_new(buft));
@@ -137,8 +188,8 @@ static void test_tensor_mtp_d2t(const test_args & args) {
         for (int i = 0; i < 2; ++i) {
             float actual[10];
             llama_token candidates[10];
-            ggml_backend_tensor_get_async(backend.get(), data[i].logits, actual, 0, sizeof(actual));
-            ggml_backend_tensor_get_async(backend.get(), data[i].candidates, candidates, 0, sizeof(candidates));
+            ggml_backend_tensor_get_async(backend.get(), res.t_sampled_logits[i], actual, 0, sizeof(actual));
+            ggml_backend_tensor_get_async(backend.get(), res.t_candidates[i], candidates, 0, sizeof(candidates));
             ggml_backend_synchronize(backend.get());
             std::vector<std::pair<float, llama_token>> ranked;
             for (int j = 0; j < 10; ++j) {

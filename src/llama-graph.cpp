@@ -4056,7 +4056,8 @@ void llm_graph_context::build_pooling(
 }
 
 void llm_graph_context::build_sampling() const {
-    if (samplers.empty() || !res->t_logits) {
+    // MTP catch-up has no output rows. Padding empty logits is not supported by the meta backend.
+    if (samplers.empty() || !res->t_logits || ggml_nelements(res->t_logits) == 0) {
         return;
     }
 
@@ -4082,7 +4083,7 @@ void llm_graph_context::build_sampling() const {
     // res->t_logits will contain logits for all tokens that want the logits calculated (logits=1 or output=1)
     GGML_ASSERT(res->t_logits != nullptr && "missing t_logits tensor");
 
-    // the padding row gives the chains without a row of the ubatch a valid input, even with no output at all
+    // the padding row gives the chains without a row of the ubatch a valid input
     ggml_tensor * logits_t = ggml_pad(ctx0, res->t_logits, 0, 1, 0, 0);
 
     for (const auto & entry : samplers) {
