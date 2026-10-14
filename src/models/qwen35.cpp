@@ -40,7 +40,7 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
 
     int64_t n_vocab_out = n_vocab;
     const ggml_tensor * d2t_meta = ml.get_tensor_meta("d2t");
-    if (mtp_only && d2t_meta) {
+    if (ml.load_mtp && mtp_only && d2t_meta) {
         n_vocab_out = d2t_meta->ne[0];
         d2t = create_tensor(tn(LLM_TENSOR_D2T), { n_vocab_out }, 0);
         LLAMA_LOG_INFO("%s: QWEN35 MTP using d2t draft-vocab trim (n_vocab_out = %lld)\n",
