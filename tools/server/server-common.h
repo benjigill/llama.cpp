@@ -39,6 +39,15 @@ using json = common_json;
 
 using raw_buffer = std::vector<uint8_t>;
 
+bool server_prompt_checkpoint_due(
+        int64_t n_tokens_start,
+        int64_t n_tokens_last,
+        int32_t min_step,
+        bool state_exact,
+        bool is_user_start,
+        bool is_last_user_message,
+        bool near_prompt_end);
+
 template <typename T>
 static T json_value(const json & body, const std::string & key, const T & default_value) {
     // Fallback null to default value

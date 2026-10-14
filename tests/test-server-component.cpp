@@ -157,6 +157,51 @@ static void test_server_tokens(testing & t) {
     t.test("clone",         test_server_tokens_clone);
 }
 
+static void test_prompt_checkpoints(testing & t) {
+    t.test("periodic exact states cover an earlier divergence", [](testing & t) {
+        std::vector<int64_t> checkpoints;
+        for (int64_t start = 2048; start < 34000; start += 2048) {
+            const int64_t last = checkpoints.empty() ? -1 : checkpoints.back();
+            if (server_prompt_checkpoint_due(start, last, 8192, true, false, false, false)) {
+                checkpoints.push_back(start);
+            }
+        }
+
+        // Message-boundary and end checkpoints can all be after the matching prefix.
+        checkpoints.insert(checkpoints.end(), {33485, 33985, 33997});
+        int64_t restored = 0;
+        for (const auto pos : checkpoints) {
+            if (pos <= 32000) {
+                restored = pos;
+            }
+        }
+        t.assert_true("prefix can be reused", restored > 0);
+        t.assert_true("replay is bounded by spacing plus a batch", 32000 - restored <= 8192 + 2048);
+    });
+
+    t.test("spacing and message boundaries", [](testing & t) {
+        t.assert_true("skip a nearby exact state",
+                !server_prompt_checkpoint_due(4096, 2048, 8192, true, false, false, false));
+        t.assert_true("keep the last user boundary despite spacing",
+                server_prompt_checkpoint_due(4096, 2048, 8192, true, true, true, false));
+        t.assert_true("keep end checkpoints despite spacing",
+                server_prompt_checkpoint_due(4096, 2048, 8192, true, false, false, true));
+        t.assert_true("zero spacing allows the next batch",
+                server_prompt_checkpoint_due(4096, 2048, 0, true, false, false, false));
+    });
+
+    t.test("SWA policy is unchanged", [](testing & t) {
+        t.assert_true("no periodic SWA checkpoint",
+                !server_prompt_checkpoint_due(16384, 2048, 8192, false, false, false, false));
+        t.assert_true("spaced user boundary",
+                server_prompt_checkpoint_due(16384, 2048, 8192, false, true, false, false));
+        t.assert_true("skip a nearby user boundary",
+                !server_prompt_checkpoint_due(4096, 2048, 8192, false, true, false, false));
+        t.assert_true("first end checkpoint",
+                server_prompt_checkpoint_due(4096, -1, 8192, false, false, false, true));
+    });
+}
+
 //
 // string / json helpers
 //
@@ -383,6 +428,7 @@ int main(int argc, char ** argv) {
     }
 
     t.test("server_tokens", test_server_tokens);
+    t.test("prompt_checkpoints", test_prompt_checkpoints);
     t.test("utf8",          test_utf8);
     t.test("sse",           test_sse);
     t.test("json_helpers",  test_json_helpers);
