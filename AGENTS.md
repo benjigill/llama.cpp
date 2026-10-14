@@ -288,6 +288,7 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #29143 d2t draft vocab for MTP sidecars - base for the local embedded trim below
 - local embedded MTP d2t trim - the MTP draft head uses a trimmed `nextn.shared_head_head` (d2t rows of output.weight) instead of the full ~248k-row output.weight; needs a model copy made by `scripts/fork/mtp-d2t.py`, without it nothing changes; tg +2-8% (49k draft vocab, probabilistic), MTP acceptance within a few hundredths
 - local ngram-mod/MTP cost routing (experimental, opt-in with `LLAMA_SPEC_COST_ROUTING=1`) - per-slot time per generated token selects the drafter, with periodic probes; repeat A/B lost the initial write gain, np2 throughput fell ~2% twice, and bounded-reasoning greedy checks differed in completed write/prose answers; fixed cooldown remains the default
+- #29187 fused GDN alpha/beta projections (experimental, default off) - set `GGML_CUDA_DISABLE_GDN_AB_FUSION=0` to opt in; target NVFP4+d2t A/B was flat (decode -0.1..-0.2%, two-slot throughput +0.3%), and actual kernel activation plus GPU numeric correctness remain unconfirmed; retain only for further diagnosis
 
 Fork scripts and the manual steps they need (ngram-mod table, trimmed MTP draft vocab): `scripts/fork/README.md`.
 

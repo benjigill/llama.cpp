@@ -3319,7 +3319,10 @@ static int ggml_cuda_try_gdn_ab_fusion(
         int node_idx,
         bool use_cuda_graph,
         ggml_cuda_gated_delta_net_ab & ab) {
-    static bool disable_gdn_ab_fusion = getenv("GGML_CUDA_DISABLE_GDN_AB_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_GDN_AB_FUSION"));
+    static const bool disable_gdn_ab_fusion = [] {
+        const char * value = getenv("GGML_CUDA_DISABLE_GDN_AB_FUSION");
+        return value == nullptr || strcmp(value, "0") != 0;
+    }();
     if (disable_gdn_ab_fusion) {
         return 0;
     }
