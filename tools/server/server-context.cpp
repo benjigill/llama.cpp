@@ -1536,7 +1536,7 @@ private:
             const char * LLAMA_SPEC_CKPT_ON_DEVICE = getenv("LLAMA_SPEC_CKPT_ON_DEVICE");
             if (LLAMA_SPEC_CKPT_ON_DEVICE && atoi(LLAMA_SPEC_CKPT_ON_DEVICE) != 0) {
                 spec_ckpt_flags |= LLAMA_STATE_SEQ_FLAGS_ON_DEVICE;
-                SRV_WRN("%s", "LLAMA_SPEC_CKPT_ON_DEVICE: speculative checkpoints are kept in device memory\n");
+                SRV_INF("%s", "LLAMA_SPEC_CKPT_ON_DEVICE: speculative checkpoints are kept in device memory\n");
             }
         }
 
@@ -3933,7 +3933,8 @@ private:
                                     }
 
                                     if (do_reset) {
-                                        SLT_INF(slot, "forcing full prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent memory, see %s)\n",
+                                        SLT_INF(slot, "forcing full prompt re-processing: no usable checkpoint for n_past = %d, pos_next = %d (%zu checkpoints, likely due to SWA or hybrid/recurrent memory, see %s)\n",
+                                                n_past, pos_next, slot.prompt.checkpoints.size(),
                                                 "https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055");
                                         pos_next = 0;
                                         n_past = 0;
@@ -4205,12 +4206,6 @@ private:
                         slot.i_batch     = batch.size() - 1;
 
                         slot.init_sampler();
-                    } else {
-                        // skip ordinary mid-prompt checkpoints, unless the batch starts a user
-                        // message or we are near the end of the prompt
-                        if (!is_user_start && !near_prompt_end) {
-                            do_checkpoint = false;
-                        }
                     }
 
                     const auto pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), slot.id);
@@ -4225,11 +4220,12 @@ private:
                     // do not checkpoint after mtmd chunks
                     do_checkpoint = do_checkpoint && !has_mtmd;
 
-                    // no need to create checkpoints that are too close together, unless it's the last user message
-                    do_checkpoint = do_checkpoint && (
-                            slot.prompt.checkpoints.empty() ||
-                            is_last_user_message || near_prompt_end ||
-                            n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
+                    // Exact states also need periodic restore points before changed message content.
+                    do_checkpoint = do_checkpoint && server_prompt_checkpoint_due(
+                            n_tokens_start,
+                            slot.prompt.checkpoints.empty() ? -1 : slot.prompt.checkpoints.back().n_tokens,
+                            params_base.checkpoint_min_step,
+                            ctx_tgt_state_exact(), is_user_start, is_last_user_message, near_prompt_end);
                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
 
                     // note: we create the checkpoint before calling llama_decode(), so the current batch is not

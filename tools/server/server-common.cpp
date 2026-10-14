@@ -33,6 +33,22 @@
 #include <unistd.h>
 #endif
 
+bool server_prompt_checkpoint_due(
+        int64_t n_tokens_start,
+        int64_t n_tokens_last,
+        int32_t min_step,
+        bool state_exact,
+        bool is_user_start,
+        bool is_last_user_message,
+        bool near_prompt_end) {
+    if (!state_exact && !is_user_start && !near_prompt_end) {
+        return false;
+    }
+
+    return n_tokens_last < 0 || is_last_user_message || near_prompt_end ||
+           n_tokens_start > n_tokens_last + min_step;
+}
+
 json format_error_response(const std::string & message, const enum error_type type) {
     std::string type_str;
     int code = 500;

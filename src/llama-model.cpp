@@ -2407,6 +2407,33 @@ llama_split_mode llama_model::split_mode() const {
     return params.split_mode;
 }
 
+bool llama_model::supports_backend_sampling(llama_context_type ctx_type) const {
+    if (split_mode() != LLAMA_SPLIT_MODE_TENSOR) {
+        return true;
+    }
+    // The Qwen d2t graph scatters a mirrored head onto a mirrored vocabulary tensor.
+    if (ctx_type != LLAMA_CONTEXT_TYPE_MTP || arch != LLM_ARCH_QWEN35 || !d2t || hparams.n_layer_nextn == 0) {
+        return false;
+    }
+
+    auto ud = get_split_state_ud;
+    if (llama_meta_device_get_split_state(d2t, &ud).axis != GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+        return false;
+    }
+
+    for (uint32_t il = hparams.n_layer(); il < hparams.n_layer_all; ++il) {
+        const auto * head = layers[il].nextn.shared_head_head;
+        if (!head) {
+            head = output;
+        }
+        if (!head || llama_meta_device_get_split_state(head, &ud).axis != GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() const {
     std::map<ggml_backend_buffer_type_t, size_t> ret;
     for (const auto & [ctx, bufs] : pimpl->ctxs_bufs) {

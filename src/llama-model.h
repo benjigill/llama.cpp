@@ -811,6 +811,7 @@ struct llama_model {
 
     uint32_t n_gpu_layers() const;
     llama_split_mode split_mode() const;
+    bool supports_backend_sampling(llama_context_type ctx_type) const;
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;
 
