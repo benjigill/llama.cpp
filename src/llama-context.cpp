@@ -1391,10 +1391,11 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
 
     LLAMA_LOG_DEBUG("%s: seq_id = %d, sampler = %p\n", __func__, (int) seq_id, (void *) sampler);
 
-    if (sampler && model.split_mode() == LLAMA_SPLIT_MODE_TENSOR) {
+    // Top-k needs a complete vocabulary row, not a per-device shard.
+    if (sampler && !model.supports_backend_sampling(cparams.ctx_type)) {
         static bool warned = false;
         if (!warned) {
-            LLAMA_LOG_WARN("%s: backend sampling not supported with SPLIT_MODE_TENSOR; using CPU\n", __func__);
+            LLAMA_LOG_WARN("%s: backend sampling with SPLIT_MODE_TENSOR requires verified mirrored MTP logits; using CPU\n", __func__);
             warned = true;
         }
         if (sampling.samplers.count(seq_id) > 0) {

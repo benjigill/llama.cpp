@@ -4,6 +4,9 @@
 #include "common.h"
 #include "sampling.h"
 
+#include "../src/llama-model.h"
+#include "../src/llama-sampler.h"
+
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -30,6 +33,132 @@ struct test_args {
 struct test_params {
     llama_model_ptr model;
 };
+
+static void test_tensor_mtp_d2t(const test_args & args) {
+    ggml_backend_dev_t devs[2];
+    if (args.device == "gpu") {
+        size_t n_devs = 0;
+        for (size_t i = 0; i < ggml_backend_dev_count() && n_devs < 2; ++i) {
+            auto * dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                devs[n_devs++] = dev;
+            }
+        }
+        GGML_ASSERT(n_devs == 2 && "test_tensor_mtp_d2t requires two GPUs");
+    } else {
+        devs[0] = devs[1] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        GGML_ASSERT(devs[0]);
+    }
+
+    auto mparams = llama_model_default_params();
+    mparams.split_mode = LLAMA_SPLIT_MODE_TENSOR;
+    llama_model_ptr model(llama_model_create(LLM_ARCH_QWEN35, mparams));
+    model->hparams = {};
+    model->hparams.n_layer_all = 3;
+    model->hparams.n_layer_nextn = 2;
+    model->hparams.ssm_n_group = 1;
+    model->hparams.ssm_dt_rank = 2;
+    model->layers.resize(3);
+    model->get_split_state_ud = {2, model.get()};
+
+    ggml_init_params gparams = {
+        /*.mem_size   =*/ 128 * ggml_tensor_overhead() + ggml_graph_overhead(),
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ true,
+    };
+    ggml_context_ptr ctx(ggml_init(gparams));
+    GGML_ASSERT(ctx);
+    constexpr int64_t n_draft = 32;
+    constexpr int64_t n_vocab = 128;
+    auto * head = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 8, n_draft);
+    ggml_set_name(head, "blk.1.nextn.shared_head_head.weight");
+    model->layers[1].nextn.shared_head_head = head;
+    model->layers[2].nextn.shared_head_head = head;
+    model->d2t = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I32, n_draft);
+    ggml_set_name(model->d2t, "d2t");
+    GGML_ASSERT(model->supports_backend_sampling(LLAMA_CONTEXT_TYPE_MTP));
+    GGML_ASSERT(!model->supports_backend_sampling(LLAMA_CONTEXT_TYPE_DEFAULT));
+
+    // A sidecar using the sharded output.weight must still take the CPU fallback.
+    model->output = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 8, n_draft);
+    ggml_set_name(model->output, "output.weight");
+    model->layers[1].nextn.shared_head_head = nullptr;
+    GGML_ASSERT(!model->supports_backend_sampling(LLAMA_CONTEXT_TYPE_MTP));
+    model->layers[1].nextn.shared_head_head = head;
+    model->layers[2].nextn.shared_head_head = nullptr;
+    GGML_ASSERT(!model->supports_backend_sampling(LLAMA_CONTEXT_TYPE_MTP));
+    model->layers[2].nextn.shared_head_head = head;
+    auto * d2t = model->d2t;
+    model->d2t = nullptr;
+    GGML_ASSERT(!model->supports_backend_sampling(LLAMA_CONTEXT_TYPE_MTP));
+    model->d2t = d2t;
+
+    auto * meta_dev = ggml_backend_meta_device(devs, 2, llama_meta_device_get_split_state, &model->get_split_state_ud);
+    ggml_backend_ptr backend(ggml_backend_dev_init(meta_dev, nullptr));
+    GGML_ASSERT(backend);
+    auto * buft = ggml_backend_dev_buffer_type(meta_dev);
+    llama_sampler_ptr chain(llama_sampler_chain_init(llama_sampler_chain_default_params()));
+    llama_sampler_chain_add(chain.get(), llama_sampler_init_top_k(10));
+    GGML_ASSERT(chain->iface->backend_init(chain.get(), buft, 1));
+
+    // Match the two-slot d2t scatter, padding, and per-slot row views in the real graph.
+    auto * draft = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, n_draft, 2);
+    ggml_set_input(draft);
+    ggml_set_input(d2t);
+    auto * logits = ggml_fill(ctx.get(), ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, 1, n_vocab, 2), -INFINITY);
+    logits = ggml_set_rows(ctx.get(), logits, ggml_reshape_3d(ctx.get(), draft, 1, n_draft, 2),
+            ggml_reshape_3d(ctx.get(), d2t, n_draft, 1, 1));
+    logits = ggml_pad(ctx.get(), ggml_reshape_2d(ctx.get(), logits, n_vocab, 2), 0, 1, 0, 0);
+    auto * gf = ggml_new_graph(ctx.get());
+    llama_sampler_data data[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        data[i].logits = ggml_view_1d(ctx.get(), logits, n_vocab, i * logits->nb[1]);
+        chain->iface->backend_apply(chain.get(), ctx.get(), gf, &data[i]);
+        ggml_set_output(data[i].logits);
+        ggml_set_output(data[i].candidates);
+        ggml_build_forward_expand(gf, data[i].logits);
+        ggml_build_forward_expand(gf, data[i].candidates);
+    }
+
+    ggml_gallocr_ptr alloc(ggml_gallocr_new(buft));
+    GGML_ASSERT(ggml_gallocr_alloc_graph(alloc.get(), gf));
+    int32_t mapping[n_draft];
+    float values[2 * n_draft];
+    for (int i = 0; i < n_draft; ++i) {
+        mapping[i] = 3 * i + 1;
+    }
+    ggml_backend_tensor_set(d2t, mapping, 0, sizeof(mapping));
+    for (int round = 0; round < 2; ++round) {
+        for (int i = 0; i < 2 * n_draft; ++i) {
+            values[i] = (i < n_draft) == (round == 0) ? float(i % n_draft) : -float(i % n_draft);
+        }
+        ggml_backend_tensor_set(draft, values, 0, sizeof(values));
+        GGML_ASSERT(ggml_backend_graph_compute(backend.get(), gf) == GGML_STATUS_SUCCESS);
+        for (int i = 0; i < 2; ++i) {
+            float actual[10];
+            llama_token candidates[10];
+            ggml_backend_tensor_get_async(backend.get(), data[i].logits, actual, 0, sizeof(actual));
+            ggml_backend_tensor_get_async(backend.get(), data[i].candidates, candidates, 0, sizeof(candidates));
+            ggml_backend_synchronize(backend.get());
+            std::vector<std::pair<float, llama_token>> ranked;
+            for (int j = 0; j < 10; ++j) {
+                ranked.emplace_back(actual[j], candidates[j]);
+            }
+            std::sort(ranked.rbegin(), ranked.rend());
+            for (int j = 0; j < 10; ++j) {
+                const int row = (i == 0) == (round == 0) ? n_draft - 1 - j : j;
+                if (ranked[j].second != mapping[row] || ranked[j].first != values[i * n_draft + row]) {
+                    fprintf(stderr, "round %d slot %d rank %d: token %d logit %g, expected token %d logit %g\n",
+                            round, i, j, ranked[j].second, ranked[j].first, mapping[row], values[i * n_draft + row]);
+                }
+                GGML_ASSERT(ranked[j].second == mapping[row]);
+                GGML_ASSERT(ranked[j].first == values[i * n_draft + row]);
+            }
+        }
+    }
+
+    printf("tensor MTP d2t backend sampling test PASSED\n");
+}
 
 static llama_model_ptr load_model(const test_args & args) {
     auto mparams = llama_model_default_params();
@@ -2213,6 +2342,12 @@ static void run_tests(const std::vector<const backend_test_case *> & tests, cons
 
 int main(int argc, char ** argv) {
     test_args args = parse_cli(argc, argv);
+
+    if (args.test == "test_tensor_mtp_d2t") {
+        llama_backend_init();
+        test_tensor_mtp_d2t(args);
+        return 0;
+    }
 
     if (args.model.empty()) {
         args.model = common_get_model_or_exit(1, argv);
