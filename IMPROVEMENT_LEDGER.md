@@ -82,10 +82,40 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - Wait for upstream support for `K > 1` instead of importing the current `K == 1`-only kernel and maintaining a separate adaptation. If it becomes available, compare its snapshot handling with the fork's prefix/tail path before porting it.
 - Upstream reports about 10-13% prompt throughput over its recurrent baseline on Qwen3.8-27B Q4_K_M, but that is not a gain over this fork's existing chunked path. Any later port needs cache-fused snapshot and numeric checks in `test-backend-ops`, followed by server prefill, decode and long-context A/B runs with speculative decoding enabled (`-ub 512`, tensor split). No CUDA code has been imported.
 
+### 8. Fused GDN alpha/beta projections (upstream ggml-org/llama.cpp#29187) - in progress (ported, target validation pending)
+
+- Ported upstream head `e75c82b7750ce2163acacf3b41232f385c758135` on branch `feat/gdn-alpha-beta-fusion`. Fuses the two projection matmuls, alpha bias/softplus/scale and beta sigmoid into one CUDA launch, without changing the GDN recurrent kernel, chunked prefix/tail path or snapshot/cache-copy fusion.
+- Revisited for the current NVFP4 + embedded MTP d2t workload. Eligibility depends on the actual `ssm_alpha.weight` and `ssm_beta.weight` types, not the model's overall quantization: both must have the same BF16/F16/F32/Q8_0 type, share a contiguous F32 input, and produce at most 8 columns in total (tokens per sequence x sequences). Upstream's NVFP4 checkpoints use BF16 projections; confirm our GGUF does too. The d2t head is independent and stays unchanged.
+- Correction to the old watch entry: the initial 8-16% estimate is obsolete. After ggml-org/llama.cpp#29633 (already in this fork as `9d3aba6b5`), upstream's 2026-10-05 RTX PRO 6000 Blackwell sweep shows about 1-4% on NVFP4 at microbatches 1-8; the measurements are `pp256` with tiny ubatches, not speculative-server decode. End-to-end gain on our two GPUs is unknown until measured. Upstream is holding the PR in favor of generic auto-fusion, so assume a long-lived carry if retained.
+- CUDA-graph-only, NVIDIA Turing or newer, stream 0, with safe fallback for unsupported shapes/types, aliasing and concurrent regions. `--split-mode tensor` already splits both projection weights and the per-head bias/scale consistently; the matcher runs on each device's graph and requires no full-head-count assumption. Four-token MTP verification fits at `-np 2` (8 columns); long ngram verification uses the existing path. No additional persistent state or checkpoint buffers.
+- Added upstream producer-fusion fixtures, including graph warmup, plus fork cases for rollback snapshots (`K=4`), multiple sequences, uneven local head counts, a 5120-wide projection and long-ngram fallback. Local CPU/reference checks cover fixture semantics only, not CUDA execution. On 2026-10-14, `cmake --build build-linux --target test-backend-ops llama-server llama-bench llama-perplexity -j 4` passed, and `build-linux/bin/test-backend-ops -b CPU -o GATED_DELTA_NET_AB_FUSION,GATED_DELTA_NET,GATED_DELTA_NET_CACHE_FUSION -j 4` passed 78/78 cases (16 producer-fusion fixtures). CUDA compilation/execution and model A/B were not run: this environment has no CUDA compiler or GPUs. Keep this as a candidate until the CUDA build, both GPUs' op checks, KLD and server A/B pass; it is not yet a validated carried patch.
+- On the target machine, stop any other GPU server first. Use the same NVFP4+d2t GGUF, mmproj and ngram table in both runs. `GGML_CUDA_DISABLE_GDN_AB_FUSION=1` disables only this fusion; `0` enables matching, so no separate baseline build is needed. Other production settings remain unchanged.
+
+```sh
+cmake -S . -B build-gdn-ab -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DGGML_CUDA_FA_QUANTS=q8_0-q4_0 -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=ON
+cmake --build build-gdn-ab -j
+
+build-gdn-ab/bin/test-backend-ops -b CUDA0 -j 8 -o GATED_DELTA_NET_AB_FUSION,GATED_DELTA_NET,GATED_DELTA_NET_CACHE_FUSION
+build-gdn-ab/bin/test-backend-ops -b CUDA1 -j 8 -o GATED_DELTA_NET_AB_FUSION,GATED_DELTA_NET,GATED_DELTA_NET_CACHE_FUSION
+
+GGML_CUDA_DISABLE_GDN_AB_FUSION=1 build-gdn-ab/bin/llama-bench -m '<model.gguf>' -sm tensor -ts 15/13 -mg 1 -ngl 999 -fa 1 -ctk q8_0 -ctv q4_0 -p 256 -n 0 -b 256 -ub 1,2,4,8,9 -r 5
+GGML_CUDA_DISABLE_GDN_AB_FUSION=0 build-gdn-ab/bin/llama-bench -m '<model.gguf>' -sm tensor -ts 15/13 -mg 1 -ngl 999 -fa 1 -ctk q8_0 -ctv q4_0 -p 256 -n 0 -b 256 -ub 1,2,4,8,9 -r 5
+
+GGML_CUDA_DISABLE_GDN_AB_FUSION=1 python3 scripts/fork/bench_qwen38.py run --bin build-gdn-ab/bin --label gdn-ab-off --model '<model.gguf>' --mmproj '<mmproj.gguf>' --production --ngram-table '<table.bin>' --suite micro,decode,parallel
+GGML_CUDA_DISABLE_GDN_AB_FUSION=0 python3 scripts/fork/bench_qwen38.py run --bin build-gdn-ab/bin --label gdn-ab-on --model '<model.gguf>' --mmproj '<mmproj.gguf>' --production --ngram-table '<table.bin>' --suite micro,decode,parallel
+python3 scripts/fork/bench_qwen38.py compare bench-results/gdn-ab-off bench-results/gdn-ab-on
+
+# Numeric check against the same build with producer fusion disabled.
+mkdir -p bench-results
+GGML_CUDA_DISABLE_GDN_AB_FUSION=1 build-gdn-ab/bin/llama-perplexity -m '<model.gguf>' -f wikitext-2-raw/wiki.test.raw --chunks 32 -b 8 -ub 8 --kl-divergence-base bench-results/kld-gdn-ab-off.bin -sm tensor -ts 15,13 -mg 1 -ngl 999 -fa on -ctk q8_0 -ctv q4_0
+GGML_CUDA_DISABLE_GDN_AB_FUSION=0 build-gdn-ab/bin/llama-perplexity -m '<model.gguf>' -f wikitext-2-raw/wiki.test.raw --chunks 32 -b 8 -ub 8 --kl-divergence-base bench-results/kld-gdn-ab-off.bin --kl-divergence -sm tensor -ts 15,13 -mg 1 -ngl 999 -fa on -ctk q8_0 -ctv q4_0
+```
+
+- Repeat the server A/B in reverse order, watching MTP acceptance as well as t/s. For a completed-answer control, repeat the decode runs with distinct labels and `--greedy-check --greedy-reasoning-budget 128 --max-tokens 2048`; compare same-policy repeats before attributing output differences to fusion. The perplexity commands intentionally use `-b 8 -ub 8` so the producer fusion executes; default large prefills would not test the changed numeric path. The WikiText fixture can be fetched with `scripts/get-wikitext-2.sh`. CUDA graphs must remain enabled; for a positive activation check, a `GGML_CUDA_DEBUG` build logs `fused gated_delta_net alpha/beta projections` during capture. `test-backend-ops perf -o GATED_DELTA_NET` measures the recurrent kernel alone, not this producer fusion.
+
 ## Considered, not now
 
 - #29208 clamp the draft context to n_ctx_train with --kv-unified - dropped: no effect with our `-c 262144` (n_ctx_seq == n_ctx_train already), and it shrinks the draft KV below the target's in two cases: non-unified `-np N` (draft gets n_ctx/N split N ways) and unified pools above n_ctx_train (slots together can outgrow the clamped draft pool).
-- #29187 fused GDN alpha/beta projections - upstream shows +8-16% decode on NVFP4 but 0-4% on Q4_K_M (fused path handles BF16/F16/F32/Q8_0 weights only); touches `gated_delta_net.cu` like our chunked patch. Revisit now that the recurrent kernel is upstream's again (#30087).
 
 - #27248 q5 K cache - dropped: keep q8_0 K.
 - #27210 adaptive MTP draft depth - wants `--spec-draft-n-max 12`, i.e. 13 recurrent snapshots per slot in VRAM; at temp 1.0 deep drafts rarely pay off and ngram-mod covers long bursts.

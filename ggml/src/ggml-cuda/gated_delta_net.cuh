@@ -20,3 +20,20 @@ bool ggml_cuda_should_use_chunked_gdn(const ggml_tensor * dst);
 // Shape-only part of the above, with no dependence on the current device. Used to size the chunked
 // scratch at allocation time, where the eventual execution device may not be current yet.
 bool ggml_cuda_gdn_chunked_shape_eligible(const ggml_tensor * dst);
+
+#define GDN_AB_FUSION_MAX_TOKENS 8 // Max. number of tokens for which to fuse the GDN alpha/beta projections.
+
+// the alpha/beta projections that feed gated_delta_net
+struct ggml_cuda_gated_delta_net_ab {
+    const ggml_tensor * alpha_mm;
+    const ggml_tensor * beta_mm;
+    const ggml_tensor * dt;
+    const ggml_tensor * ssm_a;
+    ggml_tensor *       gate_out;
+    ggml_tensor *       beta_out;
+};
+
+bool ggml_cuda_gated_delta_net_ab_supported_type(ggml_type type);
+
+// runs both projections and their activation tails in one kernel
+void ggml_cuda_op_gated_delta_net_ab(ggml_backend_cuda_context & ctx, const ggml_cuda_gated_delta_net_ab & ab);
