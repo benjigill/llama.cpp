@@ -294,6 +294,9 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #29187 fused GDN alpha/beta projections (experimental, default off) - set `GGML_CUDA_DISABLE_GDN_AB_FUSION=0` to opt in; target NVFP4+d2t A/B was flat (decode -0.1..-0.2%, two-slot throughput +0.3%), and actual kernel activation plus GPU numeric correctness remain unconfirmed; retain only for further diagnosis
 - local periodic hybrid prompt checkpoints - retain mid-prompt restore points using the existing checkpoint count and spacing limits, alongside message-boundary/end snapshots; avoids starting from zero when all boundary checkpoints are after the matching prefix
 - local tensor-split d2t draft sampling - allow backend sampling for Qwen35 MTP only when the d2t map and every selected head are mirrored; sharded heads and target sampling still use the CPU fallback; target-GPU validation pending
+- #30573 FA vec WAR race fix - warp barrier before the shared KQ buffer is reused; our decode/verify FA path; correctness only, target A/B pending
+- #30493 MMQ activation tile copy int2 (experimental) - +2.4% pp on Qwen3.8-27B Q4_K upstream (4090), but upstream found -8..-11% kernel regressions at large K and returned it to draft; keep only if our A/B wins
+- #30694 merge nearby KV range reads on host state save - with -np 2 --kv-unified, prompt-cache saves of interleaved cells stall the server loop; target A/B pending
 
 Fork scripts and the manual steps they need (ngram-mod table, trimmed MTP draft vocab): `scripts/fork/README.md`.
 

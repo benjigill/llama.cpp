@@ -16,8 +16,9 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - Kernel (`test-backend-ops perf`, 5070 Ti, master -> branch): 1 token 2.93 -> 2.91 us (flat), KDA 1 token 3.05 -> 2.94 us; 64 tokens 32h d128 68.56 -> 43.11 us (1.59x), 4h 22.13 -> 19.77 us, KDA 78.62 -> 46.35 us; 256+ tokens identical (chunked kernel).
 - End to end: micro and batched within +-0.4%. Decode moved with acceptance (greedy text differs with the new summation order) and was flat where acceptance was flat, so no decode gain. The gain is on 2-130 token batches that the chunked kernel does not take (short follow-up turns, tool results after a cache hit), which the bench suites barely exercise.
 - Dropped in the 2026-10-08 upstream sync: upstream #30087 (4 state columns per warp) rewrote the same recurrent kernel, so the two cannot both be carried. Upstream reports -33% at 64 tokens 32h d128 and -12% at 1 token on a 4090 vs the old kernel; compare against the 5070 Ti numbers above (`test-backend-ops perf -o GATED_DELTA_NET`) and re-port #22587 only if #30087 loses on our GPUs.
+- 2026-10-19 scout: still relevant. #30087 is in master (since 2026-10-08), but the `test-backend-ops perf -o GATED_DELTA_NET` comparison on the 5070 Ti against the numbers above has not been run yet.
 
-### 7. GDN MMA prefill with rollback snapshots (upstream ggml-org/llama.cpp#29353) - deferred
+### 7. GDN MMA prefill with rollback snapshots (upstream ggml-org/llama.cpp#29353) - dropped: merged upstream, never runs under -sm tensor
 
 - The open upstream MMA kernel targets `K == 1`; its author confirmed that MTP prefill with snapshots (`K > 1`) cannot use it as submitted. The fork already runs the chunked kernel on the first `n_tokens - (K - 1)` tokens and the recurrent kernel on the final `K - 1` tokens.
 - Wait for upstream support for `K > 1` instead of importing the current `K == 1`-only kernel and maintaining a separate adaptation. If it becomes available, compare its snapshot handling with the fork's prefix/tail path before porting it.
@@ -25,8 +26,9 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - 2026-10-12 scout: #26001 was closed unmerged (2026-10-06) in favour of #29353, so our #26001 port is now carried for good. Besides `K == 1` (op param 0), the #29353 CUDA gate (`select_gdn_mma_path`) needs `H_k == 16` and `H` in {16, 32, 48, 64} as seen by each device, `n_tokens >= 64` and cc exactly GA10x/Ada/1200/1210. `-sm tensor` splits GDN on the heads axis (`handle_gated_delta_net` in `ggml-backend-meta.cpp`), so neither GPU sees 16 K-heads and #29353 falls back to the recurrent kernel even with K == 1. Our chunked path only needs GQA-aligned heads.
 - Revisit only if #29353 accepts K > 1 and relaxes the per-device head gate. When it merges, keep our chunked dispatch in front of its launch (its launcher rejects our shapes anyway).
 - Sync hazard: ggerganov proposed declaring that `ggml_gated_delta_net` does not return extra states when n_tokens > K, removing the `test-backend-ops` cases for it and adding rollback guardrails in `llama_context` after #30023. Our local patch produces exactly those states: if upstream removes the tests, keep local copies; check the guardrails at the next sync.
+- 2026-10-19 scout: #29353 merged 2026-10-14 (`62df1815b`, in master). `select_gdn_mma_path` still requires `H_k == 16` per device, so it never runs under `-sm tensor`. Our chunked dispatch runs before `ggml_cuda_gdn_mma_launch` in `gated_delta_net.cu`, as planned. Nothing left to do. The guardrail now in flight is #30311 (per-cell rollback depth `n_rs = min(n_rs_seq, n_seq_tokens - 1)`), which matches the K - 1 tail snapshots our chunked path writes; watch it, see "Considered, not now".
 
-### 8. Keep the draft KV out of prompt checkpoints (upstream #29509) - in progress
+### 8. Keep the draft KV out of prompt checkpoints (upstream #29509) - dropped: superseded by upstream #30514, reverted in 79d5fd2a5
 
 - Prompt checkpoints are written with `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`. Hybrid memory then skips the target's attention KV, but `llama_kv_cache::state_write` ignores the flag, so `cur.update_dft(...)` in the server's checkpoint creation serializes the whole MTP draft KV into every checkpoint. #29509 drops that call (+9/-1, `tools/server/server-context.cpp`).
 - Applies: MTP with prompt checkpoints and `--cache-ram`. Restore stays correct: `common_prompt_checkpoint::load_dft` returns early on empty data, and `common_memory::seq_rm` trims the draft KV together with the target. The slot-file restore path only test-loads non-empty draft data. Per-round speculative checkpoints (`slot.spec_ckpt`) are untouched.
@@ -35,6 +37,7 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - Overlap: same file as #25592, #27451, the local on-device spec checkpoints and ngram-mod; `scout.py check 29509` merges clean. Our #27451 port resizes unshared buffers in place, but prompt checkpoints are always a fresh `emplace_back()` (evicted and superseded entries are erased, not reused), so `data_dft` stays empty without the call.
 - To measure: `cache` suite master vs branch (TTFT, re-processed tokens); the `created context checkpoint ... size = ... MiB` server log lines at a long prompt; greedy output after a checkpoint restore must match master.
 - 2026-10-12: applied head `b3c27359975ea4fb0f400785de3fc2729a35708a` on `feat/scout-adoptions`; committed 2026-10-13 as `1847c492f`. Only the long-term draft checkpoint write is removed; per-round speculative checkpoints and all restore paths are unchanged. The upstream explanation is shortened to two comment lines. Target-GPU memory/restore checks remain pending; do not treat the estimated saving as a measured fork result.
+- 2026-10-19 scout: #29509 closed unmerged 2026-10-15 in favour of #30514 (merged, `e467e5b5e`, in master), which fixes the cause: `llama_kv_cache::state_write/read` now writes nothing for `PARTIAL_ONLY` unless the cache is SWA, and the hybrid wrappers delegate the flag. The MTP draft context is a plain KV cache, so `update_dft(..., PARTIAL_ONLY)` now writes nothing and our `1847c492f` has no effect. Revert it (restore the upstream `update_dft` line) to shrink the server-context.cpp footprint; the size check (`created context checkpoint ... size`) still applies to master.
 
 ### 9. Recapture CUDA graphs at once after a stable replay (upstream #29768) - in progress
 
@@ -45,6 +48,7 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - Overlap: none with carried patches (CUDA graph bookkeeping only).
 - To measure: `micro,decode,parallel` suites, master vs branch. No kernel or numeric change, so no `test-backend-ops` or KLD.
 - 2026-10-12: applied head `f69225ed3e9221f014997365b652cbddc76cba4f` on `feat/scout-adoptions`; committed 2026-10-13 as `7ffbd6a71`. Initial warmup, topology-change reset and non-VMM fallback are preserved. CUDA compilation, reset frequency, VMM confirmation and target-GPU A/B remain pending. The three PR changes are separate commits for isolated measurements; the branch-tip A/B alone cannot attribute gains to an individual patch. Permanent retention still requires target-GPU results.
+- 2026-10-19 scout: still open; the head is now `d29d23401af6` (one commit, 2026-10-13). Its net diff matches our copy except that upstream master now logs `CUDA graph warmup reset` only with `GGML_CUDA_GRAPH_DEBUG=1`, so set it when counting resets. Production sets `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`; confirm the devices still report VMM with it.
 
 ### 10. Reproduce long-context recall and parallel MTP acceptance risks (upstream #27756 / #27572) - in progress
 
@@ -55,6 +59,46 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - Usage and target-GPU A/B commands are in `scripts/fork/README.md`. JSON summaries omit response text. Target reproduction results are pending.
 - Probes, focused tests and validation instructions committed 2026-10-13 as `a87c8768c`.
 - Local validation: Mac Release build succeeded; `ctest --test-dir build-check -L main --output-on-failure -j 4` passed 54/55, including server components, state save/load and MTP ubatch sync. The unrelated vocabulary-repo test fails with macOS Bash's unsupported `globstar` and GGUF files containing Git LFS pointers. Four focused Python probe tests and the project Python type checker pass. This does not compile or validate CUDA.
+- 2026-10-19 scout: both issues still open, no linked fix. Still relevant; target results still pending.
+
+### 13. Smaller draft-context ubatch for VRAM (upstream #30459, merged option) - todo
+
+- `--spec-draft-n-ubatch N` (env `LLAMA_ARG_SPEC_DRAFT_N_UBATCH`, in master since 2026-10-14) sets the draft context's physical batch size; the default 0 follows `-ub 512`. Only `common_base_params_to_speculative` changes, so it is a launch flag, not a code carry.
+- Why it applies: draft decode feeds the MTP context at most 4 tokens per slot, but its compute buffer is reserved for 512 tokens, including draft logits (49k rows with the d2t copy, 248k without). The 12 GB card under `-ts 15,13` is our ceiling, so whatever this frees can go to a larger `-c` / `--kv-unified-per-slot`.
+- Cost: MTP prompt catch-up is split into more ubatches (`llama_decode` chunks by the draft `n_ubatch`), and each one is serialized by carried #26827. That costs prefill time, not decode.
+- Expected gain: unknown until measured. Read the draft context's `compute buffer size` lines at startup for 512 vs 64 / 32. The target KV is about 26 KiB per token (16 layers x 4 KV heads x 256, q8_0 K + q4_0 V), so every 100 MiB freed is about 3.9k more pool tokens.
+- To measure: startup buffer lines and `nvidia-smi` per GPU; `long-context,cache` suites (TTFT at 128k/155k) and `decode,parallel` with `--server-extra="--spec-draft-n-ubatch 64"` vs default. Check MTP acceptance as well (it should be unchanged). No numeric change, so no KLD.
+
+### 14. FA vec shared-memory WAR race fix (upstream #30573) - in progress (ba5a7d20d, CUDA build and A/B pending)
+
+- `flash_attn_ext_vec` reuses the shared KQ buffer across KV iterations with no barrier before the next write; +3 lines add `ggml_cuda_syncwarp()` at the end of the loop. Compute-sanitizer reports 8M WAR hazards at hsk=256 before the fix and none after (RTX 3090). No wrong output has been observed.
+- Applies: the vec kernel is our decode/verify FA path (D = 256, q8_0 K / q4_0 V), and it matters more as context grows. `fattn-vec.cuh` has no fork changes; the patch applies cleanly.
+- Expected gain: correctness only; a warp barrier per KV tile should cost under 1%.
+- To measure: `test-backend-ops -o FLASH_ATTN_EXT` on both GPUs, `test-backend-ops perf -o FLASH_ATTN_EXT`, then `decode,long-context` A/B. No numeric change expected, so no KLD.
+
+### 15. Vectorized MMQ activation tile copy (upstream #30493) - in progress (e473cc6b5, CUDA build and A/B pending)
+
+- Copies MMQ activation tiles global -> shared 16 bytes at a time instead of 4 (+24/-8, `mmq.cuh` only); outputs are byte-identical.
+- Upstream (RTX 4090, Ada, a 99 KB shared-memory class like sm_120): Qwen3.8-27B UD-Q4_K_XL pp512 2984.8 -> 3057.3 (+2.4%), pp4096 +2.6%; tg unchanged.
+- Applies: Q4_K/Q6_K MMQ prefill (`-ub 512`), and ngram-mod verify batches above the MMVQ limit. Applies cleanly. Check that the fused #28702 gate/up kernel goes through the same tile loader; if it does, it also benefits.
+- Expected gain: about +1-2% pp end to end (MMQ is most of prefill).
+- To measure: `test-backend-ops -o MUL_MAT,MUL_MAT_VEC_FUSION` on both GPUs; `micro,batched,long-context` A/B.
+- 2026-10-19: the fused #28702 kernel goes through the same `mul_mat_q_process_tile` loop (the only y-tile copy in `mmq.cuh`), so it is covered. Upstream turned the PR back into a draft on 2026-10-18: on a 4090 the author found kernel regressions of -8% (Q5_K 28672/8192/128) and -10% (Q4_K 36864/4608/1024), and JohannesGaessler said the copy width has to become part of the kernel configuration. Our `ffn_down` (K = 17408, N = 512) is in that range: also compare `test-backend-ops perf -o MUL_MAT` master vs branch, and drop the commit unless pp wins end to end.
+
+### 16. Merge small KV range reads on prompt-cache save (upstream #30694) - in progress (7b0bcc943, CPU test-llama-context passes; CUDA A/B pending)
+
+- With a unified KV cache, slots that decoded together have interleaved cells, so `llama_io_write_host` issues one blocking `ggml_backend_tensor_get` per cell, per layer, for K and V. It now merges nearby small ranges (< 64 KiB, at most 8x overread + 1 MiB) into one read (+31/-3, `llama-context.cpp`, applies cleanly). Fixes #30252.
+- Upstream (RTX 3090, `-np 8 -kvu`): interleaved save 194-258 -> 50-71 ms; contiguous 8.6k-token save unchanged.
+- Applies: `-np 2 --kv-unified` with `--cache-ram` and idle-slot saves. Saves block the server loop, so both slots stall. Under `-sm tensor` the KV tensors are meta tensors (not host buffers), so the merged path is taken; confirm meta `get_tensor` handles a range spanning many cells.
+- Expected gain: a shorter stall when a slot is saved after the two slots decoded together. Little effect on long prefills, whose cells are contiguous per ubatch.
+- To measure: `cache,parallel` suites; the server log's prompt-cache save timing after a two-slot decode; greedy output after restore must match master. `test-llama-context` `frag`/`cp_h_s`/`cp_d_s` cases on CUDA.
+
+### 17. FA verify batches convert the whole quantized KV cache to f16 (upstream issue #29935, PR #30202) - todo (measure first)
+
+- `ggml_cuda_get_best_fattn_kernel` (sm_120, quantized K/V) takes the vec kernel only for `Q->ne[1] <= 2`. Our MTP verify is 4 tokens per slot, and with `-np 2 --kv-unified` both slots share one stream, so verify runs `Q->ne[1]` up to 8 and goes to the MMA kernel. `launch_fattn` then converts all of K and V (`ggml_nelements`) to f16 on every FA call. Per layer and step that reads q8_0 + q4_0, writes f16 and reads it back: about 6x the KV bytes the vec kernel reads.
+- At long context this is likely the main source of the decode slope (a rough estimate: at ~150k cells, about 12 GB of extra traffic per step per GPU across the 16 attention layers). It is the cost that a longer context adds. #29935 measured q8_0 decaying faster than f16 KV on 2x 3080 `-sm tensor` with MTP3 for this reason.
+- Fix path: #30202 (am17an PoC) dequantizes q8_0/q4_0 on the fly in the MMA kernel for 1-8 token batches; +5-12% at 32k depth on an RTX PRO 6000 (sm_120), more expected at depth. It is gated on `K->type == V->type`, so our q8_0/q4_0 falls back. Two options: (a) port #30202 and extend it to mixed K/V types (local CUDA work, long carry), or (b) A/B `-ctk q4_0 -ctv q4_0` (same type, so #30202 applies, and KV shrinks about 1/3, to about 18 KiB/token) with KLD, since K quality is the risk (rotation is already on).
+- Measure first, no code: `llama-bench -sm tensor -ts 15/13 -mg 1 -ngl 999 -fa 1 -ctk q8_0 -ctv q4_0 -p 8 -ub 8 -n 0 -d 0,32768,131072` vs `-p 2 -ub 2`, both per token. If the 8-token step grows with depth much faster than the 2-token step, the conversion is confirmed.
 
 ## Considered, not now
 
@@ -66,6 +110,15 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - #30137 ref-counted checkpoints - alternative to carried #27451; swap if it merges instead, keeping our in-place resize of unshared buffers.
 - #24891 checkpoint invalidation after tool turns - automated review flagged unsafe abort-to-warning downgrades and position vs token-count comparisons; upstream has reworked the erase logic since. Revisit after maintainer review; first check our logs for `erased invalidated context checkpoint` on multi-turn tool requests.
 
+- #29510 `flash_attn_ext_rows` for unified KV (am17an): each sequence attends only to its own cells instead of the whole unified pool under a mask. Qwen3.8-27B Q8_0, 4 x 100k, RTX Pro 6000: pp 1106 -> 2778 t/s, tg 90 -> 102. This is the fix for our `-np 2 --kv-unified` long-context cost: today a short slot's FA pays for the other slot's cells, so growing the shared pool slows both. Blocked: CUDA sends `kv_rows` only to the MMA f16 kernel (`ggml_cuda_get_best_fattn_kernel`), and `launch_fattn` converts all of K/V (`ggml_nelements(K)`) to f16 for quantized caches, so our q8_0/q4_0 decode would dequantize the full extent on every FA call. The meta backend's `handle_flash_attn_ext` ignores `src[5]` (it would likely be mirrored; untested). Revisit when the vec kernel or a quantized-K/V MMA path (#30202) reads `kv_rows`; perf-research seed meanwhile.
+- #30311 recurrent rollback guard (per-cell valid depth) - consistent with our chunked-GDN snapshots; likely to merge as the guardrail from item 7. Check at the sync that `n_rs` is set for chunked-prefix ubatches too (our K - 1 tail snapshots).
+- #30745 checkpoint at the end of the last user message, superseding earlier ones - conflicts with #25592 and the local periodic checkpoints in `create_checkpoint`; for us it saves at most about n_ubatch tokens of replay per turn. Revisit after review.
+- #30196 `llama_get_outputs` (one sync for verify outputs) - +8.7% measured only with DFlash; applies cleanly. Revisit after review, or if a profile shows per-slot verify syncs.
+- #27148 / #27624 RAM prompt cache restoring an unrelated conversation into a slot - reproduced with `-np 2`, `--kv-unified`, MTP and Qwen3.8-27B, i.e. our config. Fix candidate #27624 (clear LRU-selected slots, distinguish no-match from restore) is stale and does not apply over carried #28992. Mitigation upstream: `--no-cache-idle-slots --cache-ram 0` (costly for us). Add a contamination check (two unrelated sequential prompts, unique markers) to `scripts/fork/server-risk-checks.py` before deciding.
+- #30276 decode collapses 5-10x at large `-c` / `-np` (sm_120, 16 GB) - the diagnosis is buffers silently spilling to system memory. Production sets `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`, which turns an OOM into that spill, so when raising `-c` check per-GPU `nvidia-smi` headroom and run once without the variable to get a hard failure.
+- #28877 `misaligned address` in unary sigmoid on sm_120 with PDL, concurrent long prompts, `-np 2 --kv-unified` - load-dependent, no fix; workaround `GGML_CUDA_PDL=0`. If we ever see it, that is the first knob.
+- #30317 (issue) compute buffers over-allocated about Nx under `-sm tensor`: `ggml_backend_meta_buffer_type_get_alloc_size` sizes every tensor at its full multi-device shape. The reporter's local fix (4x 5060 Ti, Qwen3.8-27B, 262k, MTP) cut the main compute buffer from 1736 to 874 MiB per device, with byte-identical greedy output. No PR yet. On our 2 GPUs that could free several hundred MiB per card for KV: adopt when a PR appears, or treat as a perf-research seed.
+- #30511 re-run target warmup after MTP enables nextn extraction - only moves a one-time re-reserve off the first request after start; low value for a long-running server.
 - #27248 q5 K cache - dropped: keep q8_0 K. Closed upstream 2026-10-06.
 - #27210 adaptive MTP draft depth - wants `--spec-draft-n-max 12`, i.e. 13 recurrent snapshots per slot in VRAM; at temp 1.0 deep drafts rarely pay off and ngram-mod covers long bursts.
 - #24785 recurrent shrink/expand for the prompt cache - overlaps with #25592, which we carry.

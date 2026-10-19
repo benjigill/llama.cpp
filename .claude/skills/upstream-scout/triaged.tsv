@@ -1,6 +1,6 @@
 # upstream-scout triage state (see SKILL.md). One row per upstream PR, issue or discussion triaged.
 # verdict: carried | adopt | test | watch | skip ; head: PR head sha when triaged, '-' for issues and discussions
-# last-scan: 2026-10-12 48e985756
+# last-scan: 2026-10-19 ff5a23376
 number	kind	verdict	head	date	note
 9648	pr	skip	c9ae1916ec19	2026-10-12	old tensor-parallel draft
 10510	pr	skip	b83cae088c2e	2026-10-12	infill mode, 2024 draft
@@ -83,7 +83,7 @@ number	kind	verdict	head	date	note
 26551	pr	skip	d450a63fbff1	2026-10-12	draft filter SDK, 5.8k lines
 26575	pr	skip	272dc4023037	2026-10-12	DFlash/DSpark caps
 26704	pr	skip	94ee2c759734	2026-10-12	CUTLASS MoE prefill MXFP4/NVFP4
-26750	issue	watch	-	2026-10-12	RISK: CUDA MTP acceptance regression, prompt-dependent; compare our acceptance CUDA vs CPU on prose
+26750	issue	skip	-	2026-10-19	closed stale; reporter retracted the regression
 26827	pr	carried	53ae1115fa60	2026-10-12	serialize MTP multi-ubatch decode (test pinned to CPU locally)
 26968	pr	skip	90777e2e0904	2026-10-12	-md path
 26977	pr	skip	8ff58903ae53	2026-10-12	MoE MMQ tile widths
@@ -91,6 +91,7 @@ number	kind	verdict	head	date	note
 27081	disc	skip	-	2026-10-12	7900 XTX
 27090	issue	skip	-	2026-10-12	520k YaRN
 27122	issue	watch	-	2026-10-12	RISK: MTP + -sm tensor lockups; we carry #26827; workaround LLAMA_GRAPH_REUSE_DISABLE=1
+27148	issue	watch	-	2026-10-19	RISK: cache-ram / idle-slot cache restores an unrelated conversation (-np 2, kvu, MTP, Qwen3.8-27B repros); fix candidate #27624
 27154	disc	skip	-	2026-10-12	gfx1151 MTP + ngram-mod numbers
 27161	pr	skip	8482e5ffd3ce	2026-10-12	closed; replaced by merged #28636
 27164	disc	skip	-	2026-10-12	MTP-only GGUF setup
@@ -113,6 +114,7 @@ number	kind	verdict	head	date	note
 27572	issue	watch	-	2026-10-12	RISK: MTP acceptance 0 on one slot under -np 2; user approved parallel reproduction probe in server-risk-checks.py, target results pending (not a fix)
 27618	pr	skip	7c86f42b8509	2026-10-12	dots3note MTP
 27623	issue	skip	-	2026-10-12	single 16GB GPU on WSL/Windows; our long-context suite covers decode at depth
+27624	pr	watch	c71983015e99	2026-10-19	fix candidate for #27148 cache-ram cross-conversation restore; stale (08-24), does not apply over carried #28992
 27641	pr	skip	24c68c4b9693	2026-10-12	tests only
 27692	pr	skip	6eee4a185422	2026-10-12	speculative prefill (prompt compression), 3.3k lines
 27717	issue	skip	-	2026-10-12	n-cpu-moe
@@ -146,7 +148,9 @@ number	kind	verdict	head	date	note
 28287	disc	skip	-	2026-10-12	CPU FFN offload
 28333	pr	watch	7abbba20a8ac	2026-10-12	zero stale MTP pending_h at pos 0; same root cause as #30141
 28346	pr	skip	1e18a1d8e307	2026-10-12	mmproj/draft weight swap
+28356	pr	skip	b61e09194bd6	2026-10-19	reasoning-budget FORCING prompt-token edge case
 28391	pr	skip	7c2e0dea436e	2026-10-12	default spec config; we set explicit config
+28392	pr	skip	e4cd9520281c	2026-10-19	FP8 KV ~8 bpw vs q8_0 8.5: no meaningful VRAM saving
 28413	pr	skip	b757f0d5cf76	2026-10-12	FP8
 28430	disc	skip	-	2026-10-12	abliterated model
 28442	pr	skip	e302cd772164	2026-10-12	-md draft path
@@ -162,6 +166,7 @@ number	kind	verdict	head	date	note
 28790	issue	skip	-	2026-10-12	Windows build
 28815	pr	skip	eef117ec8d56	2026-10-12	test fixture
 28873	pr	skip	4cc4454a5036	2026-10-12	kv-cache PARTIAL_ONLY; #29509 covers our case
+28877	issue	watch	-	2026-10-19	RISK: PDL misaligned address in unary sigmoid on sm_120 under concurrent long prompts (-np 2 kvu); workaround GGML_CUDA_PDL=0
 28879	issue	skip	-	2026-10-12	perplexity monotonicity, informational
 28894	disc	skip	-	2026-10-12	KVMem fork, KV offload window
 28949	pr	skip	1454177f33f8	2026-10-12	embeddings mode
@@ -171,37 +176,50 @@ number	kind	verdict	head	date	note
 29121	pr	skip	cbea4a40a810	2026-10-12	CPU GDN in place
 29143	pr	adopt	65487104bcd9	2026-10-13	d2t update committed as 91462c21d: load_mtp sidecar gates and dflash scatter asserts; local embedded trim preserved, target model checks pending
 29145	issue	skip	-	2026-10-12	covered by carried #29143
+29172	issue	skip	-	2026-10-19	single 16GB card Windows deep-context collapse; consistent with sysmem spill (#30276) plus FA conversion (#29935)
 29174	issue	skip	-	2026-10-12	Flash-Next
 29181	pr	skip	4ffcbaf2aea6	2026-10-12	MoE top-k fusion
 29187	pr	watch	e75c82b7750c	2026-10-12	fused GDN alpha/beta; maintainer hold for generic auto-fusion; only BF16/F16/F32/Q8_0 weights
 29208	pr	skip	5776c325760e	2026-10-12	no effect with -c 262144; shrinks draft KV below target in other cases
 29247	pr	skip	74196df222e7	2026-10-12	RFC fusions
 29253	disc	skip	-	2026-10-12	RPC
-29353	pr	watch	377e111e8ce4	2026-10-12	GDN MMA chunked kernel; gates K == 1 and per-device H_k == 16 (fails under -sm tensor head split); keep #26001 port + local snapshots in front at merge
+29324	issue	skip	-	2026-10-19	--cache-ram -1 only; we set 80000
+29353	pr	skip	dde6a4d93256	2026-10-19	merged 2026-10-14 (62df1815b); per-device H_k == 16 gate unchanged, never runs under -sm tensor; our chunked dispatch runs first
 29355	pr	skip	857769741daf	2026-10-12	ROCm/RPC draft tuning, single slot
 29463	pr	skip	9bcfbceb4608	2026-10-12	RPC checkpoint offsets; also sets ctx_other on drafts
 29501	issue	skip	-	2026-10-12	Gemma4 assistant
-29509	pr	adopt	b3c27359975e	2026-10-13	committed as 1847c492f: draft KV out of prompt checkpoints; target memory/restore validation pending
+29509	pr	skip	0eea52756142	2026-10-19	closed unmerged 2026-10-15, superseded by merged #30514 (kv-cache honors PARTIAL_ONLY); our copy 1847c492f is now a no-op, drop it
+29510	pr	watch	ec648f24a52a	2026-10-19	unified-KV per-seq FA rows (Qwen3.8-27B 4x100k pp 2.5x, tg +13%); CUDA routes kv_rows to MMA only, which converts the whole quantized K/V extent to f16 per call -> decode regression risk with q8_0/q4_0; meta FA handler ignores src[5]; revisit when vec/quantized K/V read kv_rows
 29617	pr	skip	08494e680e85	2026-10-12	props
 29733	pr	skip	1ee76d57fb20	2026-10-12	missing MTP weights warning
-29768	pr	test	f69225ed3e92	2026-10-13	committed as 7ffbd6a71 for testing: stable graph recapture; CUDA build, VMM/reset count and A/B pending
+29768	pr	carried	d29d23401af6	2026-10-19	committed as 7ffbd6a71; matches head (only upstream GGML_CUDA_GRAPH_DEBUG log gate differs); VMM/reset count and A/B pending
 29783	issue	skip	-	2026-10-12	sm_70
 29796	pr	skip	fc92d666c734	2026-10-12	sync skip gated on device_count == 1
 29930	disc	skip	-	2026-10-12	Flash-Next
+29935	issue	watch	-	2026-10-19	seed: quantized KV + Q->ne[1] > 2 (our MTP verify, up to 8 under kvu) takes MMA with whole-cache f16 conversion per FA call; fix path #30202 (same-type K/V only)
 29948	pr	watch	b6e0f03348b5	2026-10-12	maintainer-requested alternative to carried #28702 (interleaved rows); Q4_K -2.5% vs #28702 on GB10; at merge drop #28702 but keep meta alloc dep ba4741198
+30012	pr	skip	d1dd8e8f86e4	2026-10-19	sleep race; only with --sleep-idle-seconds
 30059	pr	skip	03550d187baf	2026-10-12	MoE expert cache
 30071	disc	skip	-	2026-10-12	Flash-Next
+30075	issue	skip	-	2026-10-19	sm_60 P100 patched tree
 30077	pr	skip	85569bf774b5	2026-10-12	CUDA 12.8 codegen only; we build with 13.x
 30137	pr	watch	d2d35a3d8043	2026-10-12	ref-counted checkpoints; overlaps carried #27451; swap if this merges instead
+30139	pr	skip	1a343e400b8f	2026-10-19	in-place recurrent read gated off when n_rs_seq != 0 (MTP snapshots always on)
 30141	pr	watch	2505fa437661	2026-10-12	MTP get_state/set_state for pending_h; our MTP impl lacks it, so h is stale after every checkpoint restore; small acceptance effect, greedy A/B depends on previous request
 30188	pr	skip	d21082be6812	2026-10-12	cache_prompt=false tasks
+30196	pr	watch	77c1d264bf76	2026-10-19	one sync for verify outputs; +8.7% on DFlash only; applies clean; revisit after review or if a profile shows verify host syncs
 30201	pr	skip	da7af57bc231	2026-10-12	checkpoint after last media
 30202	pr	watch	b9e92c439ead	2026-10-12	FA MMA with on-the-fly q4_0/q8_0 KV for 1-8 tokens; requires K and V of the same type, ours are q8_0/q4_0
+30206	pr	skip	82d7f483fa90	2026-10-19	YaRN truncate=false: gpt-oss/plamo only
 30220	pr	skip	73647e8ade6f	2026-10-12	DFlash + mtmd
+30252	issue	skip	-	2026-10-19	interleaved-cell save stall; fix is #30694 (test)
+30276	issue	watch	-	2026-10-19	RISK for larger -c: decode collapses 5-10x when buffers silently spill to sysmem; production sets GGML_CUDA_ENABLE_UNIFIED_MEMORY=1, which turns OOM into spill
 30277	pr	skip	928ae7779305	2026-10-12	KDA tensor split
 30278	pr	skip	45208c2ef519	2026-10-12	TQ2_0
 30285	pr	skip	d20f12534f04	2026-10-12	FA head sizes 40/72
 30294	pr	skip	be4292d7485c	2026-10-12	MTP fallback message
+30311	pr	watch	8b5f29ab4ed3	2026-10-19	rollback depth guard per cell (n_rs = min(n_rs_seq, n_seq_tokens-1)); consistent with local chunked snapshots; guardrail ggerganov asked for, sync hazard
+30317	issue	watch	-	2026-10-19	RISK/seed: -sm tensor sizes compute buffers at full multi-device shape (~Nx); reporter halves main buffer, no PR yet; adopt when a PR appears
 30327	pr	skip	6823010241e5	2026-10-12	graph debug env, no perf change
 30328	disc	skip	-	2026-10-12	single 5060 Ti numbers
 30345	pr	skip	43d674696328	2026-10-12	masked-mode h_nextn row selection, latent in current qwen35 MTP flow per author
@@ -212,3 +230,23 @@ number	kind	verdict	head	date	note
 30395	issue	skip	-	2026-10-12	MoE layer-split MTP launch timeout
 30396	issue	skip	-	2026-10-12	MoE layer-split MTP launch timeout
 30397	pr	skip	0d2494b4e33c	2026-10-12	Flash-Next MTP image embds
+30427	pr	skip	0ff8a40e493b	2026-10-19	fit-params spec args; see #30442
+30442	pr	skip	e1fbefaf6134	2026-10-19	fit-params with spec args; production sets -c/-ngl explicitly
+30469	pr	skip	a4aa330fe280	2026-10-19	sched host context buffer; Windows commit charge, not VRAM
+30489	pr	skip	784fd01678cb	2026-10-19	GLU into MMQ q8_1 quant; our FFN GLU is already fused by carried #28702
+30493	pr	carried	9e37a8578f47	2026-10-19	MMQ y-tile int2 copy; committed e473cc6b5; upstream marked draft 10-18 after -8..-11% kernel regressions at large K on 4090 - keep only if our A/B wins
+30511	pr	watch	fa58f2d68197	2026-10-19	re-run target warmup after MTP enables nextn extraction; only moves a one-time re-reserve off the first request
+30523	pr	skip	a28b5f210565	2026-10-19	error instead of abort on oversized batch; hardening only
+30541	pr	skip	0e3dbf0f23cf	2026-10-19	on-device state copy of quantized KV; our spec ckpts are PARTIAL_ONLY (no attn KV after #30514), recurrent state F32
+30553	pr	skip	5a32fef3edd4	2026-10-19	Stream-K cap only when nwork < nsm; ne00 >= 5120 keeps nwork above 70
+30573	pr	carried	9ece86a6c728	2026-10-19	FA vec WAR race fix; committed ba5a7d20d; CUDA build/tests/A-B pending
+30594	pr	skip	f6dea514f021	2026-10-19	MoE expert cache; dense 27B
+30662	pr	skip	0051ee070254	2026-10-19	1-line graph eviction guard; minor, arrives with sync
+30663	pr	skip	14626b5f59bd	2026-10-19	DFlash2 sampling
+30683	pr	skip	aea631747092	2026-10-19	reuse checkpoint at same position; carried #25592 already reuses the equivalent back() checkpoint
+30694	pr	carried	a393c51052cd	2026-10-19	merge small KV range reads on host save; committed 7b0bcc943; cache/parallel A/B pending
+30745	pr	watch	53a55e321af5	2026-10-19	checkpoint at last-user-end supersedes older ones; conflicts with #25592 + local periodic checkpoints; saves <= ~n_ubatch replay per turn
+30770	pr	skip	906c79aa26bd	2026-10-19	MTP prune tooling for other models, +2256 lines
+30776	pr	skip	0c43b69ce131	2026-10-19	draft threadpool only matters without OpenMP / strict CPU; draft runs on GPU
+30779	pr	skip	0d021ef967a1	2026-10-19	parent/child slots (n > 1); not used
+30782	issue	skip	-	2026-10-19	SYCL MTP regression
