@@ -537,6 +537,14 @@ static bool ggml_cuda_fattn_kv_type_supported(const ggml_type type) {
     }
 }
 
+// fork experiment: with a quantized K/V cache the MMA kernel first converts all of K/V to f16, so speculative verify
+// batches (MTP 4 tokens per slot) pay a whole-cache conversion per layer and step; the vec kernel reads the quantized
+// cache directly for any batch size (column blocks of 2). GGML_CUDA_FA_VEC_MAX_COLS sets the largest batch that uses it.
+static int64_t ggml_cuda_fattn_vec_max_cols_quantized() {
+    static const int64_t n = getenv("GGML_CUDA_FA_VEC_MAX_COLS") ? std::max(1, atoi(getenv("GGML_CUDA_FA_VEC_MAX_COLS"))) : 2;
+    return n;
+}
+
 static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
 #ifndef FLASH_ATTN_AVAILABLE
     GGML_UNUSED(device); GGML_UNUSED(dst);
@@ -647,7 +655,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 }
             } else {
                 if (cc >= GGML_CUDA_CC_ADA_LOVELACE) {
-                    if (Q->ne[1] <= 2) {
+                    if (Q->ne[1] <= ggml_cuda_fattn_vec_max_cols_quantized()) {
                         return BEST_FATTN_KERNEL_VEC;
                     }
                 } else {
