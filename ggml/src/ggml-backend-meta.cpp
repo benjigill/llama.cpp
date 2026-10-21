@@ -312,6 +312,8 @@ static size_t ggml_backend_meta_buffer_type_get_max_size(ggml_backend_buffer_typ
     return max_size;
 }
 
+static size_t ggml_backend_meta_fa_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor, size_t full_size);
+
 static size_t ggml_backend_meta_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
     const size_t n_simple_bufts = ggml_backend_meta_buft_n_bufts(buft);
     size_t max_alloc_size = 0;
@@ -319,7 +321,7 @@ static size_t ggml_backend_meta_buffer_type_get_alloc_size(ggml_backend_buffer_t
         const size_t alloc_size = ggml_backend_buft_get_alloc_size(ggml_backend_meta_buft_simple_buft(buft, i), tensor);
         max_alloc_size = std::max(max_alloc_size, alloc_size);
     }
-    return max_alloc_size;
+    return ggml_backend_meta_fa_alloc_size(buft, tensor, max_alloc_size);
 }
 
 static bool ggml_backend_meta_buffer_type_is_host(ggml_backend_buffer_type_t buft) {
@@ -491,13 +493,35 @@ static struct ggml_tensor * ggml_backend_meta_buffer_simple_tensor(const struct 
 
 static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(const struct ggml_tensor * tensor, bool assume_sync);
 
+// see [TAG_META_RESERVE_PROBE]: number of devices while probing, 0 otherwise; the depth bounds the walk to short chains of views
+static thread_local size_t meta_probe_n_bufs = 0;
+static thread_local int    meta_probe_depth  = 0;
+static constexpr int META_PROBE_MAX_DEPTH = 8;
+
 static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         ggml_backend_meta_simple_tensor_container & stc, const struct ggml_tensor * tensor, bool assume_sync) {
     // FIXME Currently this function preserves/erases the information in n_segments and nr in an inconsistent way.
     // Since the operations in question are developed specifically for llama.cpp this currently does not manifest as a bug there.
     // However, in a broader ggml context with arbitrary ggml graphs this can lead to unexpected results.
-    const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(tensor->buffer);
-    ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) tensor->buffer->context;
+    // [TAG_META_RESERVE_PROBE] a tensor without a buffer is being sized by the graph allocator, see
+    //   ggml_backend_meta_probe_split_state: it is not cached and only meta or unallocated sources resolve
+    const bool probe = tensor->buffer == nullptr;
+    GGML_ASSERT(!probe || meta_probe_n_bufs > 0);
+    const size_t n_bufs = probe ? meta_probe_n_bufs : ggml_backend_meta_buffer_n_bufs(tensor->buffer);
+    ggml_backend_meta_buffer_context * buf_ctx = probe ? nullptr : (ggml_backend_meta_buffer_context *) tensor->buffer->context;
+
+    auto get_src_split_state = [&](const ggml_tensor * src, bool sync) -> ggml_backend_meta_split_state {
+        if (!probe) {
+            return ggml_backend_meta_get_split_state(stc, src, sync);
+        }
+        if (src->buffer != nullptr ? !ggml_backend_buffer_is_meta(src->buffer) : meta_probe_depth >= META_PROBE_MAX_DEPTH) {
+            return {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
+        }
+        meta_probe_depth++;
+        const ggml_backend_meta_split_state ret = ggml_backend_meta_get_split_state(stc, src, sync);
+        meta_probe_depth--;
+        return ret;
+    };
 
     auto split_states_equal = [&](const ggml_backend_meta_split_state & a, const ggml_backend_meta_split_state & b) -> bool {
         if (a.axis != b.axis) {
@@ -835,7 +859,7 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         if (ggml_nelements(tensor) == 0) {
             return {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
         }
-        if (ggml_backend_buffer_get_usage(tensor->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE && tensor->view_src == nullptr) {
+        if (!probe && ggml_backend_buffer_get_usage(tensor->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE && tensor->view_src == nullptr) {
             ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(tensor->buffer));
             const ggml_backend_meta_device_context * dev_ctx = (const ggml_backend_meta_device_context *) dev->context;
             ggml_backend_meta_split_state ret = dev_ctx->get_split_state(tensor, dev_ctx->get_split_state_ud);
@@ -862,7 +886,10 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 src_ss[i] = {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
                 continue;
             }
-            src_ss[i] = ggml_backend_meta_get_split_state(stc, tensor->src[i], /*assume_sync =*/ true);
+            src_ss[i] = get_src_split_state(tensor->src[i], /*assume_sync =*/ true);
+            if (probe && src_ss[i].axis == GGML_BACKEND_SPLIT_AXIS_UNKNOWN) {
+                return src_ss[i];
+            }
             GGML_ASSERT(src_ss[i].axis != GGML_BACKEND_SPLIT_AXIS_UNKNOWN);
         }
 
@@ -871,7 +898,7 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             case GGML_OP_NONE: {
                 if (tensor->view_src != nullptr) {
                     // full-tensor view created with ggml_view_tensor, transparent for the split state
-                    split_state = ggml_backend_meta_get_split_state(stc, tensor->view_src, assume_sync);
+                    split_state = get_src_split_state(tensor->view_src, assume_sync);
                 } else {
                     split_state = {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
                 }
@@ -1074,7 +1101,6 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         }
         if (split_state.axis >= 0 && split_state.axis < GGML_MAX_DIMS) {
             bool first_src_split_by_axis = true;
-            const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(tensor->buffer);
 
             for (size_t i = 0; i < GGML_MAX_SRC; i++) {
                 if (tensor->src[i] == nullptr || src_ss[i].axis < 0 || src_ss[i].axis >= GGML_MAX_DIMS) {
@@ -1114,6 +1140,10 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         }
         return split_state;
     };
+
+    if (probe) {
+        return calculate_split_state();
+    }
 
     const std::pair key = std::make_pair(tensor, assume_sync);
     auto it = buf_ctx->split_state_cache.find(key);
@@ -1194,6 +1224,85 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
 
     ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) tensor->buffer->context;
     return ggml_backend_meta_get_split_state(buf_ctx->get_simple_tensor_container(tensor), tensor, assume_sync);
+}
+
+// split state of a tensor that the graph allocator may not have allocated yet (a view of the KV cache while a compute
+//   buffer is sized), UNKNOWN if it cannot be derived from a short chain of sources
+static ggml_backend_meta_split_state ggml_backend_meta_probe_split_state(const ggml_tensor * tensor, size_t n_bufs) {
+    const ggml_backend_meta_split_state unknown = {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
+    if (tensor->buffer != nullptr) {
+        return ggml_backend_buffer_is_meta(tensor->buffer) ? ggml_backend_meta_get_split_state(tensor, /*assume_sync =*/ true) : unknown;
+    }
+    static thread_local ggml_backend_meta_simple_tensor_container stc_probe;
+    meta_probe_n_bufs = n_bufs;
+    meta_probe_depth  = 0;
+    ggml_backend_meta_split_state ret = ggml_backend_meta_get_split_state(stc_probe, tensor, /*assume_sync =*/ true);
+    meta_probe_n_bufs = 0;
+    if (ret.axis >= 0 && ret.axis < GGML_MAX_DIMS) {
+        int64_t ne_sum = 0;
+        for (size_t s = 0; s < ret.n_segments; s++) {
+            for (size_t j = 0; j < n_bufs; j++) {
+                ne_sum += ret.ne[s*n_bufs + j] * ret.nr[s];
+            }
+        }
+        if (ne_sum != tensor->ne[ret.axis]) {
+            return unknown;
+        }
+    }
+    return ret;
+}
+
+// [TAG_META_FA_SCRATCH] (upstream #30317) the CUDA flash attention allocation carries f16 copies of K and V sized by their
+//   element counts; with K/V split by heads each device only converts its own heads, so size the copies per device.
+//   Q and the output keep their full shape: they can only overestimate. GGML_META_FA_SCRATCH_FULL=1 restores the full size.
+static size_t ggml_backend_meta_fa_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor, size_t full_size) {
+    static const bool disabled = getenv("GGML_META_FA_SCRATCH_FULL") != nullptr && atoi(getenv("GGML_META_FA_SCRATCH_FULL")) != 0;
+    const size_t n_bufs = ggml_backend_meta_buft_n_bufts(buft);
+    if (disabled || n_bufs < 2 || tensor->op != GGML_OP_FLASH_ATTN_EXT || full_size <= ggml_nbytes(tensor) ||
+            tensor->src[0] == nullptr || tensor->src[1] == nullptr || tensor->src[2] == nullptr) {
+        return full_size; // the last check skips kernels without K/V copies (vec decode) at no cost
+    }
+
+    ggml_backend_meta_split_state ss_kv[2];
+    for (int i = 0; i < 2; i++) {
+        ss_kv[i] = ggml_backend_meta_probe_split_state(tensor->src[1 + i], n_bufs);
+        if (ss_kv[i].axis != GGML_BACKEND_SPLIT_AXIS_2) {
+            return full_size; // only a split by KV heads shrinks the copies
+        }
+    }
+
+    const ggml_tensor * q = tensor->src[0];
+    size_t max_size = 0;
+    for (size_t j = 0; j < n_bufs; j++) {
+        // same slice shape as ggml_backend_meta_buffer_init_tensor_impl
+        ggml_tensor kv[2];
+        for (int i = 0; i < 2; i++) {
+            const ggml_tensor * src = tensor->src[1 + i];
+            kv[i] = *src;
+            kv[i].ne[2] = 0;
+            for (size_t s = 0; s < ss_kv[i].n_segments; s++) {
+                kv[i].ne[2] += ss_kv[i].ne[s*n_bufs + j] * ss_kv[i].nr[s];
+            }
+            for (int d = 0; d < GGML_MAX_DIMS; d++) {
+                if (src->nb[d] > src->nb[2]) {
+                    kv[i].nb[d] = src->nb[d] * kv[i].ne[2] / src->ne[2];
+                }
+            }
+        }
+        if (kv[0].ne[2] == 0 || q->ne[2] % tensor->src[1]->ne[2] != 0) {
+            return full_size;
+        }
+        // keep the GQA ratio the kernel selection sees on this device
+        ggml_tensor q_j = *q;
+        q_j.ne[2] = kv[0].ne[2] * (q->ne[2] / tensor->src[1]->ne[2]);
+
+        ggml_tensor dst = *tensor;
+        dst.src[0] = &q_j;
+        dst.src[1] = &kv[0];
+        dst.src[2] = &kv[1];
+        max_size = std::max(max_size, ggml_backend_buft_get_alloc_size(ggml_backend_meta_buft_simple_buft(buft, j), &dst));
+    }
+    return std::min(full_size, max_size);
 }
 
 static void * ggml_backend_meta_buffer_get_base(ggml_backend_buffer_t buffer) {
