@@ -93,11 +93,27 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - Expected gain: a shorter stall when a slot is saved after the two slots decoded together. Little effect on long prefills, whose cells are contiguous per ubatch.
 - To measure: `cache,parallel` suites; the server log's prompt-cache save timing after a two-slot decode; greedy output after restore must match master. `test-llama-context` `frag`/`cp_h_s`/`cp_d_s` cases on CUDA.
 
+### Result of items 14-16 together (branch `feat/scout-adoptions-10-19`, 2026-10-21)
+
+- Target A/B, fork master vs branch, production mode, one run each. `test-backend-ops perf -o MUL_MAT` was run master vs branch with no failures (the timings were not recorded here).
+  | suite | master | branch | delta |
+  | --- | --- | --- | --- |
+  | micro pp4096 d0 / d32768 (ub512) | 1627.0 / 1313.4 | 1653.7 / 1323.6 | +1.6% / +0.8% |
+  | micro tg128 d0 / d32768 (ub512) | 53.73 / 47.47 | 54.54 / 48.07 | +1.5% / +1.3% |
+  | batched npl1 / npl2 / npl4 tg | 53.31 / 98.49 / 161.31 | 54.17 / 100.22 / 164.19 | +1.6..1.8% |
+  | cache multiturn0 / multiturn1 TTFT s | 0.54 / 0.53 | 0.39 / 0.39 | -28% / -27% (prompt_n identical) |
+  | decode greedy edit / write / prose tg | 73.92 / 69.76 / 66.55 | 82.47 / 75.78 / 67.80 | +11.6 / +8.6 / +1.9% |
+  | decode greedy accept edit / write / prose | 0.40 / 0.34 / 0.31 | 0.47 / 0.39 / 0.31 | |
+  | decode probabilistic edit / write / prose tg | 88.96 / 84.91 / 81.06 | 92.91 / 88.42 / 83.30 | +4.4 / +4.1 / +2.8% |
+  | parallel np1 / np3 aggregate | 64.26 / 114.15 | 66.93 / 118.65 | +4.2 / +3.9% |
+- Reading: `tg128` in micro moved +1.5% although no patch touches MMVQ decode at d0, so about 1.5% is likely a run-to-run offset; the pp gain attributable to #30493 is within that. Repeat micro in reverse order before keeping #30493 permanently. The multi-turn TTFT drop with identical re-processed tokens fits #30694 (idle-slot saves no longer stall the next request). Greedy acceptance changed (edit 0.40 -> 0.47), so greedy outputs differ between the builds; the greedy tg gains follow acceptance, not kernel speed. Of the four changes, only the FA vec race fix (#30573) can change results (#30493 is byte-identical upstream, #30694 and the revert do not touch numerics), which suggests the race did affect attention output on sm_120. Check with a same-build greedy repeat, and KLD vs master.
+
 ### 17. FA verify batches convert the whole quantized KV cache to f16 (upstream issue #29935, PR #30202) - todo (measure first)
 
 - `ggml_cuda_get_best_fattn_kernel` (sm_120, quantized K/V) takes the vec kernel only for `Q->ne[1] <= 2`. Our MTP verify is 4 tokens per slot, and with `-np 2 --kv-unified` both slots share one stream, so verify runs `Q->ne[1]` up to 8 and goes to the MMA kernel. `launch_fattn` then converts all of K and V (`ggml_nelements`) to f16 on every FA call. Per layer and step that reads q8_0 + q4_0, writes f16 and reads it back: about 6x the KV bytes the vec kernel reads.
 - At long context this is likely the main source of the decode slope (a rough estimate: at ~150k cells, about 12 GB of extra traffic per step per GPU across the 16 attention layers). It is the cost that a longer context adds. #29935 measured q8_0 decaying faster than f16 KV on 2x 3080 `-sm tensor` with MTP3 for this reason.
 - Fix path: #30202 (am17an PoC) dequantizes q8_0/q4_0 on the fly in the MMA kernel for 1-8 token batches; +5-12% at 32k depth on an RTX PRO 6000 (sm_120), more expected at depth. It is gated on `K->type == V->type`, so our q8_0/q4_0 falls back. Two options: (a) port #30202 and extend it to mixed K/V types (local CUDA work, long carry), or (b) A/B `-ctk q4_0 -ctv q4_0` (same type, so #30202 applies, and KV shrinks about 1/3, to about 18 KiB/token) with KLD, since K quality is the risk (rotation is already on).
+- Memory side (2026-10-21): the f16 copy lives in the FA node's own allocation. `ggml_cuda_flash_attn_ext_get_alloc_size` adds `ggml_nelements(K) + ggml_nelements(V)` halves whenever the chosen kernel is MMA/TILE. At reserve time the graph uses the full cache (`n_kv` = 262144) and a 512-token ubatch (MMA), so each compute buffer that holds an FA node carries about 1 GiB of scratch (4 KV heads x 256 x 262144 x 2 B, for K and V). Under `-sm tensor` every GPU reserves it at the full head count (#30317), and the MTP draft context reserves its own copy, because its FA also sees a 262144-cell cache. The scratch is sized by `n_kv`, not the ubatch, so `--spec-draft-n-ubatch` does not shrink it unless the draft ubatch is <= 2 (the vec kernel needs no scratch). It grows linearly with `-c`: after the KV itself, it is the largest memory cost of a longer context. An on-the-fly dequantizing MMA path for all batch sizes would remove it entirely; #30317-style per-device sizing halves it per GPU.
 - Measure first, no code: `llama-bench -sm tensor -ts 15/13 -mg 1 -ngl 999 -fa 1 -ctk q8_0 -ctv q4_0 -p 8 -ub 8 -n 0 -d 0,32768,131072` vs `-p 2 -ub 2`, both per token. If the 8-token step grows with depth much faster than the 2-token step, the conversion is confirmed.
 
 ## Considered, not now
