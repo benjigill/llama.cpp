@@ -16,6 +16,15 @@ Read the "Fork Policy" section of `AGENTS.md` and the whole of `IMPROVEMENT_LEDG
 - Never present an estimate as a measurement. Label every number as measured (where and when) or estimated (from what).
 - ASCII only in the ledger. No private data (paths, hostnames, model file names) in anything that may be committed. No commit without approval.
 
+## Delegation (save tokens)
+
+The analysis and ranking need the main model. Delegate the rest:
+- Parsing profiles and bench output the user brings back: `/bench-review <files>` (`bench-analyst`, sonnet). Ask it for kernel buckets and per-device busy time.
+- Reading another engine's code or a paper for one specific question: `Explore` or `general-purpose` with `model: sonnet`. Ask a narrow question and ask for file:line citations.
+- Novelty searches (`gh search prs/issues`) over many terms: `pr-triager` (haiku) with the list of hits to classify.
+- Writing the ledger items and "Profile baseline": `ledger-scribe` (haiku), from your finished notes.
+- Falsification commands for the Linux box: `/linux-handoff` (haiku) for the build and A/B part. Write the experiment-specific steps yourself.
+
 ## 0. Gate: is the upstream list exhausted?
 
 This skill comes after upstream-scout has run dry. Check:

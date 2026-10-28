@@ -15,6 +15,22 @@ Bring `upstream/master` (ggml-org/llama.cpp) into the fork's `master` (benjigill
 - Small steps: if the report suggests intermediate targets (gap > 150 commits), merge them one at a time on the same branch, building after each.
 - When upstream has merged a PR we carry, **upstream's version wins**: resolve to theirs, remove our copy, and delete the line from "Carried patches".
 
+## Delegation (save tokens)
+
+The main model owns the decisions: what to merge, how to judge `verify`, and what to tell the user. Hand the mechanical work to subagents (`.claude/agents/`):
+
+| Step | Agent | Model | Notes |
+| --- | --- | --- | --- |
+| 1 report, 4 verify, "who owns this file" | `sync-reporter` | haiku | returns condensed output and maps files to carried patches |
+| 3 conflicts | `conflict-resolver` | sonnet | one per conflicted file, in parallel when the files are independent. Give it `OLD`, the target and the file. Paste its `resolution:` lines into the merge message. Resolve every `escalated` file yourself or ask the user |
+| 3 leak check, message | `fork-style-checker` (`/fork-precommit <msg-file>`) | haiku | before `git commit --no-verify` |
+| 4 AGENTS.md carried list | `ledger-scribe` | haiku | give it the exact lines to drop |
+| 5 local build | `build-runner` (`/build-check`) | haiku | |
+| 7 hand-off | `/linux-handoff sync/upstream-<date> sync` | haiku | then check its op list against this sync |
+| results back from the Linux box | `/bench-review` (`bench-analyst`) | sonnet | |
+
+Review subagent output before acting on it. In particular, read `git diff` for each file a `conflict-resolver` changed before staging it.
+
 ## Steps
 
 ### 1. Report

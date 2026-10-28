@@ -303,3 +303,7 @@ Fork scripts and the manual steps they need (ngram-mod table, trimmed MTP draft 
 Benchmark: `scripts/fork/bench_qwen38.py` (A/B vs a master build, see the header of the file).
 
 Backlog and outcomes of candidate improvements: `IMPROVEMENT_LEDGER.md`.
+
+Claude Code helpers: skills in `.claude/skills/` (upstream-sync, upstream-scout, perf-research, build-check, fork-precommit, linux-handoff, bench-review) and cheaper subagents in `.claude/agents/`. Delegate mechanical work to them and keep design decisions in the main session:
+- haiku: `build-runner` (build + tests, errors only), `sync-reporter` (sync.sh report/verify, patch ownership), `pr-triager` (first-pass upstream triage), `fork-style-checker` (AGENTS.md rules, leak-check), `ledger-scribe` (ledger, carried list, triaged.tsv)
+- sonnet: `conflict-resolver` (one conflicted file), `pr-analyst` (one upstream PR deep dive or revision diff), `bench-analyst` (results -> verdict + numbers), `fork-coder` (scoped changes from a given design)

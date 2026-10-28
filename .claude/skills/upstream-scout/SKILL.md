@@ -39,6 +39,24 @@ Where the time goes: if the ledger has a "Profile baseline" section (written by 
 - decode is memory-bound. Q4_K/Q6_K mat-vec (MMVQ) for the verify batch is most of it, then the GDN recurrent kernel, FA vec at long context, copies between the two GPUs under `-sm tensor`, and host overhead per token (sampling over a ~248k vocab, speculation bookkeeping, checkpoint copies).
 - prefill is Q4_K MMQ, then chunked GDN and FA MMA.
 
+## Delegation (save tokens)
+
+PR bodies and diffs are large. Keep them out of the main context:
+
+| Step | Agent | Model | Notes |
+| --- | --- | --- | --- |
+| 1 carried PR with newer commits | `pr-analyst` (mode B) | sonnet | one per PR, in parallel. Give it the PR number and our commit sha |
+| 1 tracked item changed | `pr-analyst` (mode A) | sonnet | include the ledger's revisit condition in the prompt |
+| 4 triage pass | `pr-triager` | haiku | batches of 10-15 numbers per agent, several agents in parallel. Run its `mark ... skip` commands yourself after a glance; deep-dive the `look` items |
+| 5 deep dive | `pr-analyst` (mode A) | sonnet | one per shortlisted PR, in parallel. You make the final verdict |
+| 6 records | `ledger-scribe` | haiku | give it the verdicts, the ledger drafts from `pr-analyst`, and the mark commands |
+| Adopting: apply and fix up | `fork-coder` | sonnet | only for mechanical adaptation of the PR diff to our tree |
+| Adopting: local build | `/build-check` | haiku | |
+| Adopting: hand-off | `/linux-handoff feat/<name> <kind>` | haiku | |
+| Adopting: results | `/bench-review` | sonnet | its numbers block goes into the commit message and ledger |
+
+Agents return suggestions. The verdicts, and anything told to the user, stay with the main model.
+
 ## Helper
 
 `.claude/skills/upstream-scout/scout.py` (stdlib Python, needs an authenticated `gh` and git >= 2.38). Run from the repo root:
