@@ -276,7 +276,6 @@ Never commit local usernames, home or mount paths, hostnames, emails, API keys, 
 Keep this list current. One line per patch: upstream PR (or `local`), short name, why we carry it.
 
 - local Qwen MTP-only export output-head sidecars - keep the `lm_head` NVFP4/FP8 scale and packed tensors when exporting only the MTP head, so the shared output head converts from Qwen3.8 NVFP4 checkpoints (the mixed FP8/NVFP4 conversion itself is upstream #28636, which replaced our #27161)
-- #28265 qwen35 ssm_out 2D - one mat-mul instead of n_seqs mat-vecs; faster decode with -np > 1
 - #28992 server prompt cache lookups - stop skipping cache loads for shorter-prefix/empty slots
 - #25592 hybrid/recurrent checkpoint handling - reuse checkpoints across agent turns instead of full re-processing
 - #28702 CUDA fused Q4_K gate/up + SwiGLU MMQ for prefill - +4-11% pp on Qwen3.x-27B Q4_K_M upstream; KLD vs master (-sm tensor, q8_0/q4_0 KV) 0.0098, same class as master -sm layer vs tensor (0.0079): rounding, not corruption
@@ -294,7 +293,6 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - #29187 fused GDN alpha/beta projections (experimental, default off) - set `GGML_CUDA_DISABLE_GDN_AB_FUSION=0` to opt in; target NVFP4+d2t A/B was flat (decode -0.1..-0.2%, two-slot throughput +0.3%), and actual kernel activation plus GPU numeric correctness remain unconfirmed; retain only for further diagnosis
 - local periodic hybrid prompt checkpoints - retain mid-prompt restore points using the existing checkpoint count and spacing limits, alongside message-boundary/end snapshots; avoids starting from zero when all boundary checkpoints are after the matching prefix
 - local tensor-split d2t draft sampling - allow backend sampling for Qwen35 MTP only when the d2t map and every selected head are mirrored; sharded heads and target sampling still use the CPU fallback; target-GPU validation pending
-- #30573 FA vec WAR race fix - warp barrier before the shared KQ buffer is reused; our decode/verify FA path; correctness only, target A/B pending
 - #30493 MMQ activation tile copy int2 (experimental) - +2.4% pp on Qwen3.8-27B Q4_K upstream (4090), but upstream found -8..-11% kernel regressions at large K and returned it to draft; keep only if our A/B wins
 - #30694 merge nearby KV range reads on host state save - with -np 2 --kv-unified, prompt-cache saves of interleaved cells stall the server loop; target A/B pending
 
