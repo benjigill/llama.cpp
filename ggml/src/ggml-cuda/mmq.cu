@@ -6,14 +6,6 @@
 #include <cstdint>
 
 static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream, const ggml_prec prec_src1) {
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-    if (args.x_gate) {
-        GGML_ASSERT(args.type_x == GGML_TYPE_Q4_K);
-        mul_mat_q_gate_up_swiglu_case<GGML_TYPE_Q4_K>(ctx, args, stream);
-        return;
-    }
-#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-
     switch (args.type_x) {
         case GGML_TYPE_Q1_0:
             mul_mat_q_case<GGML_TYPE_Q1_0, GGML_PREC_Q8>(ctx, args, stream);
@@ -139,19 +131,52 @@ static ggml_prec ggml_cuda_mmq_get_prec_src1(const ggml_tensor * src0, const ggm
     return GGML_PREC_Q4;
 }
 
-// gate != nullptr selects the fused dense Q4_K gate+up+SwiGLU kernel: src0 is the up weight, dst the SwiGLU output.
-static void ggml_cuda_mul_mat_q_impl(
-        ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1,
-        const ggml_tensor * ids, ggml_tensor * dst, const ggml_tensor * gate) {
+// Tile width in ne11 (dense) / ne12 (MoE) direction with the fewest tiles that fits into shared memory, 0 if there is none.
+static int ggml_cuda_mmq_get_J_best(
+        const ggml_type type, const int64_t ncols, const bool fallback, const int cc, const size_t smpbo, const ggml_prec prec_src1,
+        int * nthreads_best = nullptr) {
+    int J_best        = 0;
+    int ntiles_J_best = INT_MAX;
+
+    for (int J = 8; J <= 128 && ntiles_J_best > 1; J += 8) {
+        const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, fallback, cc, prec_src1);
+        if (config.type == GGML_TYPE_COUNT) {
+            continue;
+        }
+
+        if (mmq_get_nbytes_shared(config, cc) > smpbo) {
+            continue;
+        }
+
+        const int ntiles_x = (ncols + config.J - 1) / config.J;
+
+        if (ntiles_x < ntiles_J_best) {
+            J_best = J;
+            if (nthreads_best) {
+                *nthreads_best = config.nthreads;
+            }
+            ntiles_J_best = ntiles_x;
+        }
+    }
+    return J_best;
+}
+
+void ggml_cuda_mul_mat_q(
+        ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
+        const ggml_cuda_mm_fusion_args_host * fusion) {
     GGML_ASSERT(        src1->type == GGML_TYPE_F32);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
 
-    if (gate) {
-        GGML_ASSERT(ids == nullptr);
-        GGML_ASSERT(src0->type == GGML_TYPE_Q4_K && gate->type == GGML_TYPE_Q4_K);
-        GGML_ASSERT(ggml_are_same_shape(src0, gate));
-        GGML_ASSERT(ggml_are_same_stride(src0, gate));
+    // Fused gate/up/GLU: src0 is the up weight, dst the GLU output.
+    const ggml_tensor * gate = fusion ? fusion->gate : nullptr;
+    ggml_cuda_mm_fusion_args_device fusion_device = {};
+    if (fusion) {
+        GGML_ASSERT(gate && !fusion->x_bias && !fusion->gate_bias && !fusion->x_scale && !fusion->gate_scale);
+        GGML_ASSERT(gate->type == src0->type && ggml_are_same_shape(gate, src0) && ggml_are_same_stride(gate, src0));
+        fusion_device.gate      = gate->data;
+        fusion_device.glu_op    = fusion->glu_op;
+        fusion_device.glu_limit = fusion->glu_limit;
     }
 
     GGML_TENSOR_BINARY_OP_LOCALS;
@@ -175,9 +200,17 @@ static void ggml_cuda_mul_mat_q_impl(
     const float * src1_d = (const float *) src1->data;
     float       *  dst_d = (float       *)  dst->data;
 
-    ggml_cuda_clear_padding(src0, stream);
-    if (gate) {
-        ggml_cuda_clear_padding(gate, stream);
+    // If src0 (or the fused gate weight) is a temporary compute buffer, clear any potential padding.
+    for (const ggml_tensor * t : { src0, gate }) {
+        if (t && ggml_backend_buffer_get_usage(t->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
+            const size_t size_data  = ggml_nbytes(t);
+            const size_t size_alloc = ggml_backend_buffer_get_alloc_size(t->buffer, t);
+            if (size_alloc > size_data) {
+                GGML_ASSERT(ggml_is_contiguously_allocated(t));
+                GGML_ASSERT(!t->view_src);
+                CUDA_CHECK(cudaMemsetAsync((char *) t->data + size_data, 0, size_alloc - size_data, stream));
+            }
+        }
     }
 
     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
@@ -191,7 +224,8 @@ static void ggml_cuda_mul_mat_q_impl(
 
     const bool fallback = ggml_cuda_mmq_needs_fallback(ne01);
 
-    // The fused gate/up kernel is Q4_K only and always takes src1 as Q8_1; dst is the GLU node there, not a MUL_MAT.
+    // With fusion dst is the GLU output, not a MUL_MAT; the fused types always quantize src1 to Q8_1.
+    // TODO support for Q4 precision if both tensors allow it
     const ggml_prec prec_src1 = gate ? GGML_PREC_Q8 : ggml_cuda_mmq_get_prec_src1(src0, dst, cc);
 
     const bool use_native_fp4 = prec_src1 == GGML_PREC_Q4;
@@ -213,26 +247,7 @@ static void ggml_cuda_mul_mat_q_impl(
             }
         }
 
-        int ntiles_J_best = INT_MAX;
-
-        for (int J = 8; J <= 128 && ntiles_J_best > 1; J += 8) {
-            const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(src0->type, J, fallback, cc, prec_src1);
-            if (config.type == GGML_TYPE_COUNT) {
-                continue;
-            }
-
-            if (mmq_get_nbytes_shared(config, cc) > smpbo) {
-                continue;
-            }
-
-            const int ntiles_x = (ncols_opt + config.J - 1) / config.J;
-
-            if (ntiles_x < ntiles_J_best) {
-                J_best = J;
-                nthreads_best = config.nthreads;
-                ntiles_J_best = ntiles_x;
-            }
-        }
+        J_best = ggml_cuda_mmq_get_J_best(src0->type, ncols_opt, fallback, cc, smpbo, prec_src1, &nthreads_best);
     }
     GGML_ASSERT(J_best > 0);
 
@@ -243,17 +258,7 @@ static void ggml_cuda_mul_mat_q_impl(
         * src1_load_chunk_size;
 
     if (!ids) {
-        size_t src1_padding = src1_q8_1_padding;
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-        if (gate) {
-            // The fused kernel picks its own J (up to GGML_CUDA_MMQ_GATE_UP_SWIGLU_J_MAX), which can exceed J_best;
-            // pad for its largest tile, rounded up to the largest load chunk (nthreads <= 512).
-            const size_t max_load_chunk_size = 512 * sizeof(int);
-            src1_padding = std::max(src1_padding,
-                GGML_PAD(GGML_CUDA_MMQ_GATE_UP_SWIGLU_J_MAX * sizeof(block_q8_1_mmq), max_load_chunk_size));
-        }
-#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-        const size_t nbytes_src1_q8_1 = ne13*ne12 * ne11*ne10_padded * y_block_size/y_values_per_block + src1_padding;
+        const size_t nbytes_src1_q8_1 = ne13*ne12 * ne11*ne10_padded * y_block_size/y_values_per_block + src1_q8_1_padding;
         ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), nbytes_src1_q8_1);
         ggml_cuda_pool_alloc<float> src1_scale(ctx.pool());
         if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) {
@@ -284,14 +289,13 @@ static void ggml_cuda_mul_mat_q_impl(
                                 ne11 * ne10_padded * sizeof(block_q8_1) / (QK8_1 * sizeof(int));
         const int64_t s13 = ne12*s12;
 
-        mmq_args args = {
+        const mmq_args args = {
             src0_d, src0->type, (const int *) src1_q8_1.ptr, nullptr, nullptr, dst_d,
             src0->type == GGML_TYPE_NVFP4 && use_native_fp4 ? src1_scale.ptr : nullptr,
             ne00, ne01, ne1, s01, ne11, s1,
             ne02, ne12, s02, s12, s2,
             ne03, ne13, s03, s13, s3,
-            ne1, J_best};
-        args.x_gate = gate ? (const char *) gate->data : nullptr;
+            ne1, J_best, fusion_device};
         ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, prec_src1);
         return;
     }
@@ -370,25 +374,10 @@ static void ggml_cuda_mul_mat_q_impl(
         ne00, ne01, ne_get_rows, s01, ne_get_rows, s1,
         ne02, ne02, s02, s12, s2,
         ne03, ne13, s03, s13, s3,
-        ne12, J_best};
+        ne12, J_best, fusion_device};
 
     ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, prec_src1);
 }
-
-void ggml_cuda_mul_mat_q(
-        ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1,
-        const ggml_tensor * ids, ggml_tensor * dst) {
-    ggml_cuda_mul_mat_q_impl(ctx, src0, src1, ids, dst, nullptr);
-}
-
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-void ggml_cuda_mul_mat_q_gate_up_swiglu(
-        ggml_backend_cuda_context & ctx, const ggml_tensor * up, const ggml_tensor * gate,
-        const ggml_tensor * src, ggml_tensor * dst) {
-    GGML_ASSERT(gate != nullptr);
-    ggml_cuda_mul_mat_q_impl(ctx, up, src, nullptr, dst, gate);
-}
-#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 
 bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t n_experts) {
 #ifdef GGML_CUDA_FORCE_CUBLAS
@@ -522,4 +511,23 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
     }
 
     return (!GGML_CUDA_CC_IS_CDNA(cc)) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;
+}
+
+bool ggml_cuda_mmq_fusion_is_efficient(const ggml_type type, const int64_t nrows_x, const int64_t ncols, const int64_t nchannels, const int device) {
+    const int    cc    = ggml_cuda_info().devices[device].cc;
+    const int    nsm   = ggml_cuda_info().devices[device].nsm;
+    const size_t smpbo = ggml_cuda_info().devices[device].smpbo;
+
+    // Same tile width as ggml_cuda_mul_mat_q; the fused kernel has no fallback, quantizes src1 to Q8_1 and writes I/2 output rows per tile.
+    const bool fallback = false;
+    const int  J_best   = ggml_cuda_mmq_get_J_best(type, ncols, fallback, cc, smpbo, GGML_PREC_Q8);
+    if (J_best == 0) {
+        return false;
+    }
+    const int64_t nrows_tile = ggml_cuda_mmq_get_config(type, J_best, fallback, cc, GGML_PREC_Q8).I / 2;
+    const int64_t ntiles     = (ncols + J_best - 1)/J_best * ((nrows_x + nrows_tile - 1)/nrows_tile) * nchannels;
+    // Same condition as launch_mul_mat_q uses to run the stream-k kernel with one block per tile.
+    const int64_t tiles_nwaves             = (ntiles + nsm - 1) / nsm;
+    const int64_t tiles_efficiency_percent = 100 * ntiles / (nsm*tiles_nwaves);
+    return tiles_efficiency_percent >= 90;
 }
