@@ -388,19 +388,6 @@ static bool ggml_cuda_is_aligned(const ggml_tensor * tensor, const size_t alignm
            tensor->nb[3] % alignment == 0;
 }
 
-static void ggml_cuda_clear_padding(const ggml_tensor * tensor, cudaStream_t stream) {
-    if (ggml_backend_buffer_get_usage(tensor->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
-        return;
-    }
-    const size_t size_data  = ggml_nbytes(tensor);
-    const size_t size_alloc = ggml_backend_buffer_get_alloc_size(tensor->buffer, tensor);
-    if (size_alloc > size_data) {
-        GGML_ASSERT(ggml_is_contiguously_allocated(tensor));
-        GGML_ASSERT(!tensor->view_src);
-        CUDA_CHECK(cudaMemsetAsync((char *) tensor->data + size_data, 0, size_alloc - size_data, stream));
-    }
-}
-
 static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
 #if defined(GGML_USE_HIP) && (defined(__GFX9__) || defined(__GFX8__))
     return 64;
@@ -1277,15 +1264,12 @@ struct ggml_tensor_extra_gpu {
 struct ggml_cuda_graph {
 #ifdef USE_CUDA_GRAPH
     ~ggml_cuda_graph() {
-        if (instance != nullptr) {
+        for (cudaGraphExec_t instance : instances) {
             CUDA_CHECK(cudaGraphExecDestroy(instance));
         }
-        if (graph != nullptr) {
-            CUDA_CHECK(cudaGraphDestroy(graph));
-        }
     }
-    cudaGraph_t graph = nullptr;
-    cudaGraphExec_t instance = nullptr;
+    // the ggml graph is captured as a series of CUDA graphs, so the GPU can run one chunk while the next is enqueued
+    std::vector<cudaGraphExec_t> instances;
     size_t num_nodes = 0;
     std::vector<cudaGraphNode_t> nodes;
     bool disable_due_to_gpu_arch = false;
@@ -1516,7 +1500,7 @@ struct ggml_backend_cuda_context {
     // Check if any CUDA graph has an instance for this context
     bool any_cuda_graph_has_instance() const {
         for (const auto & [key, graph] : cuda_graphs) {
-            if (graph && graph->instance != nullptr) {
+            if (graph && !graph->instances.empty()) {
                 return true;
             }
         }
