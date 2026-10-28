@@ -492,6 +492,79 @@ static struct ggml_tensor * ggml_backend_meta_buffer_simple_tensor(const struct 
 static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(const struct ggml_tensor * tensor, bool assume_sync);
 
 static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+        ggml_backend_meta_simple_tensor_container & stc, const struct ggml_tensor * tensor, bool assume_sync);
+
+// local: compute the split states of uncached ancestors bottom-up, without recursion. A stale cache entry clears
+// the whole cache, and in the middle of a deep graph the recursive calculation then runs over every ancestor in
+// one call chain, which overflows the stack (e.g. qwen4exp + MTP verify batches under -sm tensor).
+static void ggml_backend_meta_warm_split_states(
+        ggml_backend_meta_simple_tensor_container & stc, const struct ggml_tensor * tensor, bool assume_sync) {
+    using key_t = std::pair<const ggml_tensor *, bool>;
+
+    if (ggml_backend_buffer_is_meta(tensor->buffer)) {
+        auto * buf_ctx = (ggml_backend_meta_buffer_context *) tensor->buffer->context;
+        auto it = buf_ctx->split_state_cache.find(std::make_pair(tensor, assume_sync));
+        if (it != buf_ctx->split_state_cache.end() && memcmp(it->second.second, (const char *) tensor, sizeof(it->second.second)) == 0) {
+            return; // cached, the common case
+        }
+    }
+
+    for (;;) {
+        std::vector<key_t> order; // inputs before the tensors that read them
+        std::set<key_t> seen;
+        std::vector<std::pair<key_t, bool>> todo = {{{tensor, assume_sync}, false}};
+        bool cleared = false;
+
+        while (!todo.empty()) {
+            const auto [key, expanded] = todo.back();
+            todo.pop_back();
+            if (expanded) {
+                order.push_back(key);
+                continue;
+            }
+            if (!seen.insert(key).second) {
+                continue;
+            }
+            const ggml_tensor * t = key.first;
+            if (!ggml_backend_buffer_is_meta(t->buffer)) {
+                continue;
+            }
+            auto * buf_ctx = (ggml_backend_meta_buffer_context *) t->buffer->context;
+            auto it = buf_ctx->split_state_cache.find(key);
+            if (it != buf_ctx->split_state_cache.end()) {
+                if (memcmp(it->second.second, (const char *) t, sizeof(it->second.second)) == 0) {
+                    continue;
+                }
+                // same invalidation as ggml_backend_meta_get_split_state, done before anything is computed
+                buf_ctx->split_state_cache.clear();
+                cleared = true;
+                break;
+            }
+            todo.push_back({key, true});
+            if (ggml_nelements(t) == 0 ||
+                    (ggml_backend_buffer_get_usage(t->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE && t->view_src == nullptr)) {
+                continue;
+            }
+            for (size_t i = 0; i < GGML_MAX_SRC; i++) {
+                if (t->src[i] != nullptr && t->src[i] != t) {
+                    todo.push_back({{t->src[i], true}, false});
+                }
+            }
+            if (t->op == GGML_OP_NONE && t->view_src != nullptr) {
+                todo.push_back({{t->view_src, key.second}, false});
+            }
+        }
+        if (cleared) {
+            continue;
+        }
+        for (const key_t & key : order) {
+            ggml_backend_meta_get_split_state(stc, key.first, key.second);
+        }
+        return;
+    }
+}
+
+static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         ggml_backend_meta_simple_tensor_container & stc, const struct ggml_tensor * tensor, bool assume_sync) {
     // FIXME Currently this function preserves/erases the information in n_segments and nr in an inconsistent way.
     // Since the operations in question are developed specifically for llama.cpp this currently does not manifest as a bug there.
@@ -1115,6 +1188,13 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         }
         return split_state;
     };
+
+    static thread_local bool warming = false;
+    if (!warming) {
+        warming = true;
+        ggml_backend_meta_warm_split_states(stc, tensor, assume_sync);
+        warming = false;
+    }
 
     const std::pair key = std::make_pair(tensor, assume_sync);
     auto it = buf_ctx->split_state_cache.find(key);
