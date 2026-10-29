@@ -151,11 +151,27 @@ static ggml_backend_buffer_type_t ggml_backend_meta_device_get_buffer_type(ggml_
 
 static ggml_backend_buffer_type_t ggml_backend_meta_device_get_host_buffer_type(ggml_backend_dev_t dev);
 
+// local: the scheduler's copy of a host weight (op offload of e.g. --n-cpu-moe experts) keeps the weight as src[0],
+// see ggml_backend_sched_split_graph, so that the copy is split like the weight would be on the devices
+static bool ggml_backend_meta_is_host_weight_copy(const ggml_tensor * t) {
+    return t->op == GGML_OP_NONE && t->view_src == nullptr && t->src[0] != nullptr && t->src[0]->buffer != nullptr &&
+        !ggml_backend_buffer_is_meta(t->src[0]->buffer) &&
+        ggml_backend_buffer_get_usage(t->src[0]->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
+}
+
 static bool ggml_backend_meta_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     GGML_ASSERT(ggml_backend_dev_is_meta(dev));
     const ggml_backend_meta_device_context * meta_dev_ctx = (const ggml_backend_meta_device_context *) dev->context;
     return std::all_of(meta_dev_ctx->simple_devs.begin(), meta_dev_ctx->simple_devs.end(),
         [op](ggml_backend_dev_t simple_dev) { return ggml_backend_dev_supports_op(simple_dev, op); });
+}
+
+// local: offload an op with a host weight when every device would, the weight is then copied in split per batch
+static bool ggml_backend_meta_device_offload_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+    GGML_ASSERT(ggml_backend_dev_is_meta(dev));
+    const ggml_backend_meta_device_context * meta_dev_ctx = (const ggml_backend_meta_device_context *) dev->context;
+    return std::all_of(meta_dev_ctx->simple_devs.begin(), meta_dev_ctx->simple_devs.end(),
+        [op](ggml_backend_dev_t simple_dev) { return ggml_backend_dev_offload_op(simple_dev, op); });
 }
 
 static bool ggml_backend_meta_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
@@ -189,7 +205,7 @@ static const ggml_backend_device_i ggml_backend_meta_device_iface = {
     /* .buffer_from_host_ptr = */ nullptr,
     /* .supports_op          = */ ggml_backend_meta_device_supports_op,
     /* .supports_buft        = */ ggml_backend_meta_device_supports_buft,
-    /* .offload_op           = */ nullptr,
+    /* .offload_op           = */ ggml_backend_meta_device_offload_op,
     /* .event_new            = */ nullptr,
     /* .event_free           = */ nullptr,
     /* .event_synchronize    = */ nullptr,
@@ -541,7 +557,7 @@ static void ggml_backend_meta_warm_split_states(
                 break;
             }
             todo.push_back({key, true});
-            if (ggml_nelements(t) == 0 ||
+            if (ggml_nelements(t) == 0 || ggml_backend_meta_is_host_weight_copy(t) ||
                     (ggml_backend_buffer_get_usage(t->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE && t->view_src == nullptr)) {
                 continue;
             }
@@ -908,10 +924,11 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         if (ggml_nelements(tensor) == 0) {
             return {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
         }
-        if (ggml_backend_buffer_get_usage(tensor->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE && tensor->view_src == nullptr) {
+        const bool host_weight_copy = ggml_backend_meta_is_host_weight_copy(tensor);
+        if (host_weight_copy || (ggml_backend_buffer_get_usage(tensor->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE && tensor->view_src == nullptr)) {
             ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(tensor->buffer));
             const ggml_backend_meta_device_context * dev_ctx = (const ggml_backend_meta_device_context *) dev->context;
-            ggml_backend_meta_split_state ret = dev_ctx->get_split_state(tensor, dev_ctx->get_split_state_ud);
+            ggml_backend_meta_split_state ret = dev_ctx->get_split_state(host_weight_copy ? tensor->src[0] : tensor, dev_ctx->get_split_state_ud);
             if (ret.axis >= 0 && ret.axis < GGML_MAX_DIMS) {
                 const int64_t granularity = ret.axis == GGML_BACKEND_SPLIT_AXIS_0 ? ggml_blck_size(tensor->type) : 1;
                 int64_t ne_sum = 0;
@@ -1209,7 +1226,7 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         if (buf_ctx->debug > 0) {
             std::string srcs_info;
             for (size_t i = 0; i < GGML_MAX_SRC; i++) {
-                if (tensor->src[i] == nullptr || tensor->src[i] == tensor) {
+                if (tensor->src[i] == nullptr || tensor->src[i] == tensor || (i == 0 && ggml_backend_meta_is_host_weight_copy(tensor))) {
                     continue;
                 }
                 if (!srcs_info.empty()) {
@@ -1384,6 +1401,9 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
             } else if (t_ij->src[i] != nullptr && ggml_backend_buffer_is_meta(t_ij->src[i]->buffer)) {
                 t_ij->src[i] = ggml_backend_meta_buffer_simple_tensor(tensor->src[i], j);
             }
+        }
+        if (ggml_backend_meta_is_host_weight_copy(tensor)) {
+            t_ij->src[0] = nullptr; // only the meta split state reads it
         }
 
         simple_tensors.push_back(t_ij);

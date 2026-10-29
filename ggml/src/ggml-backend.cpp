@@ -1527,6 +1527,11 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                         for (int c = 0; c < sched->n_copies; c++) {
                             struct ggml_tensor * tensor_copy = ggml_dup_tensor_layout(sched->ctx, src);
                             ggml_format_name(tensor_copy, "%s#%s#%d", ggml_backend_name(backend), src->name, c);
+                            // local: a host weight copied into a -sm tensor split keeps its source, so the meta backend splits the copy like the weight
+                            if (ggml_backend_is_meta(backend) && src->buffer != NULL && ggml_backend_buffer_is_host(src->buffer) &&
+                                    ggml_backend_buffer_get_usage(src->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
+                                tensor_copy->src[0] = src;
+                            }
                             if (sched->n_copies > 1) {
                                 ggml_set_input(tensor_copy);
                                 ggml_set_output(tensor_copy); // prevent ggml-alloc from overwriting the tensor
