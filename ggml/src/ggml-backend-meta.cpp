@@ -13,6 +13,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <set>
 #include <string>
 #include <tuple>
@@ -190,16 +191,22 @@ static ggml_backend_meta_split_state ggml_backend_meta_offload_resplit(const ggm
         return ss;
     }
 
-    // one granularity for every axis, so that e.g. the gate/up rows and the down columns of an expert FFN are split alike
-    constexpr int64_t granularity = 256;
+    // the granularity of the model split is the gcd of its slices; gate/up rows and down columns of an expert FFN have the
+    // same slices, so they are re-split alike (e.g. expert width 640, slices 256/384: units of 128)
+    int64_t granularity = 0;
+    for (size_t s = 0; s < ss.n_segments; s++) {
+        for (size_t j = 0; j < n_bufs; j++) {
+            granularity = std::gcd(granularity, ss.ne[s*n_bufs + j]);
+        }
+    }
+    if (granularity <= 0) {
+        return ss;
+    }
     ggml_backend_meta_split_state ret = ss;
     for (size_t s = 0; s < ss.n_segments; s++) {
         int64_t total = 0;
         for (size_t j = 0; j < n_bufs; j++) {
             total += ss.ne[s*n_bufs + j];
-        }
-        if (total % granularity != 0) {
-            return ss; // all segments or none
         }
         const int64_t units = total / granularity;
         double  w_acc     = 0.0;
