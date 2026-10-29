@@ -2802,6 +2802,12 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         return true;
     }
 
+    // local: the meta backend (-sm tensor) cannot read the strided ids or take byte-range uploads, so the scheduler
+    // copies the whole weight, split per device; a prefill batch uses nearly every expert anyway
+    if (lctx->model.split_mode() == LLAMA_SPLIT_MODE_TENSOR) {
+        return false;
+    }
+
     auto & st = lctx->copy_experts;
 
     // the ids must be computed before the split starts, so only the first node of the split is considered
