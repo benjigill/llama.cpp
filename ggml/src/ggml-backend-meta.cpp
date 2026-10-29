@@ -159,6 +159,61 @@ static bool ggml_backend_meta_is_host_weight_copy(const ggml_tensor * t) {
         ggml_backend_buffer_get_usage(t->src[0]->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
 }
 
+// local: GGML_META_OFFLOAD_SPLIT=w0,w1,... splits the offloaded host weights across the devices in these proportions
+// instead of the model split, e.g. by PCIe bandwidth when the links differ ("1,0": the first device uploads and computes
+// all of it). The weights only live for one batch, so this does not touch the VRAM balance of the resident weights.
+static ggml_backend_meta_split_state ggml_backend_meta_offload_resplit(const ggml_backend_meta_split_state & ss, size_t n_bufs) {
+    static const std::vector<double> weights = [] {
+        std::vector<double> w;
+        const char * env = getenv("GGML_META_OFFLOAD_SPLIT");
+        for (const char * p = env; p != nullptr && *p != '\0'; ) {
+            char * end = nullptr;
+            const double v = strtod(p, &end);
+            if (end == p || v < 0.0) {
+                GGML_LOG_WARN("%s: ignoring invalid GGML_META_OFFLOAD_SPLIT='%s'\n", __func__, env);
+                return std::vector<double>();
+            }
+            w.push_back(v);
+            p = *end == ',' ? end + 1 : end;
+        }
+        return w;
+    }();
+
+    if (weights.size() != n_bufs || (ss.axis != GGML_BACKEND_SPLIT_AXIS_0 && ss.axis != GGML_BACKEND_SPLIT_AXIS_1)) {
+        return ss;
+    }
+    double w_sum = 0.0;
+    for (double w : weights) {
+        w_sum += w;
+    }
+    if (w_sum <= 0.0) {
+        return ss;
+    }
+
+    // one granularity for every axis, so that e.g. the gate/up rows and the down columns of an expert FFN are split alike
+    constexpr int64_t granularity = 256;
+    ggml_backend_meta_split_state ret = ss;
+    for (size_t s = 0; s < ss.n_segments; s++) {
+        int64_t total = 0;
+        for (size_t j = 0; j < n_bufs; j++) {
+            total += ss.ne[s*n_bufs + j];
+        }
+        if (total % granularity != 0) {
+            return ss; // all segments or none
+        }
+        const int64_t units = total / granularity;
+        double  w_acc     = 0.0;
+        int64_t units_acc = 0;
+        for (size_t j = 0; j < n_bufs; j++) {
+            w_acc += weights[j];
+            const int64_t units_end = j == n_bufs - 1 ? units : std::min<int64_t>(units, (int64_t) (units*w_acc/w_sum + 0.5));
+            ret.ne[s*n_bufs + j] = (units_end - units_acc) * granularity;
+            units_acc = units_end;
+        }
+    }
+    return ret;
+}
+
 static bool ggml_backend_meta_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     GGML_ASSERT(ggml_backend_dev_is_meta(dev));
     const ggml_backend_meta_device_context * meta_dev_ctx = (const ggml_backend_meta_device_context *) dev->context;
@@ -929,6 +984,9 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(tensor->buffer));
             const ggml_backend_meta_device_context * dev_ctx = (const ggml_backend_meta_device_context *) dev->context;
             ggml_backend_meta_split_state ret = dev_ctx->get_split_state(host_weight_copy ? tensor->src[0] : tensor, dev_ctx->get_split_state_ud);
+            if (host_weight_copy) {
+                ret = ggml_backend_meta_offload_resplit(ret, n_bufs);
+            }
             if (ret.axis >= 0 && ret.axis < GGML_MAX_DIMS) {
                 const int64_t granularity = ret.axis == GGML_BACKEND_SPLIT_AXIS_0 ? ggml_blck_size(tensor->type) : 1;
                 int64_t ne_sum = 0;
