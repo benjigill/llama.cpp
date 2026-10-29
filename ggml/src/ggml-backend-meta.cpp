@@ -2119,6 +2119,85 @@ static void ggml_backend_meta_get_tensor_async(ggml_backend_t backend, const ggm
     }
 }
 
+// local: upload a whole host weight into its meta copy with async 2D copies on every device's stream, so the devices
+// upload in parallel (op offload of host weights under -sm tensor). Same layout logic as ggml_backend_meta_buffer_set_tensor.
+static bool ggml_backend_meta_upload_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data) {
+    const size_t n_backends = ggml_backend_meta_n_backends(backend);
+    const ggml_backend_meta_split_state ss = ggml_backend_meta_get_split_state(tensor, /*assume_sync =*/ false);
+
+    if (ss.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+        for (size_t j = 0; j < n_backends; j++) {
+            ggml_backend_tensor_set_async(ggml_backend_meta_simple_backend(backend, j),
+                ggml_backend_meta_buffer_simple_tensor(tensor, j), data, 0, ggml_nbytes(tensor));
+        }
+        return true;
+    }
+    if (ss.axis < 0 || ss.axis >= GGML_MAX_DIMS) {
+        return false;
+    }
+
+    if (ss.n_segments == 1 && ss.nr[0] == 1) {
+        // contiguous chunks along the split axis
+        const size_t  chunk_size_full = tensor->nb[ss.axis + 1];
+        const int64_t n_chunks        = ggml_nbytes(tensor) / chunk_size_full;
+        size_t offset_j = 0;
+        for (size_t j = 0; j < n_backends; j++) {
+            ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(tensor, j);
+            const size_t chunk_size_j = simple_tensor->nb[ss.axis + 1];
+            if (chunk_size_j == 0) {
+                continue;
+            }
+            ggml_backend_tensor_set_2d_async(ggml_backend_meta_simple_backend(backend, j), simple_tensor,
+                (const char *) data + offset_j, 0, chunk_size_j, n_chunks, chunk_size_j, chunk_size_full);
+            offset_j += chunk_size_j;
+        }
+        GGML_ASSERT(offset_j == chunk_size_full);
+        return true;
+    }
+
+    // segmented split (e.g. fused gate/up), only the shapes the synchronous path supports
+    if (tensor->ne[3] != 1 || ss.axis > GGML_BACKEND_SPLIT_AXIS_1 || (ss.axis == GGML_BACKEND_SPLIT_AXIS_0 && tensor->ne[2] != 1)) {
+        return false;
+    }
+    const int     dim        = ss.axis + 1; // the dimension the segments repeat over
+    const int64_t row_count  = tensor->ne[dim];
+    const int64_t blck_size  = ss.axis == GGML_BACKEND_SPLIT_AXIS_0 ? ggml_blck_size(tensor->type) : 1;
+    const size_t  elem_bytes = ss.axis == GGML_BACKEND_SPLIT_AXIS_0 ? tensor->nb[0] : tensor->nb[1];
+
+    size_t offset_data = 0;
+    std::vector<size_t> simple_offsets(n_backends, 0);
+    for (size_t s = 0; s < ss.n_segments; s++) {
+        for (size_t r = 0; r < ss.nr[s]; r++) {
+            for (size_t j = 0; j < n_backends; j++) {
+                ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(tensor, j);
+                GGML_ASSERT(ss.ne[s*n_backends + j] % blck_size == 0);
+                const size_t nbytes = ss.ne[s*n_backends + j]/blck_size * elem_bytes;
+                if (nbytes > 0) {
+                    ggml_backend_tensor_set_2d_async(ggml_backend_meta_simple_backend(backend, j), simple_tensor,
+                        (const char *) data + offset_data, simple_offsets[j], nbytes,
+                        row_count, simple_tensor->nb[dim], tensor->nb[dim]);
+                }
+                offset_data       += nbytes;
+                simple_offsets[j] += nbytes;
+            }
+        }
+    }
+    GGML_ASSERT(offset_data == tensor->nb[dim]);
+    return true;
+}
+
+static bool ggml_backend_meta_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
+    GGML_UNUSED(backend_src);
+    // only weights: their host data never changes while the copy is in flight
+    if (!ggml_backend_is_meta(backend_dst) || src->buffer == nullptr || !ggml_backend_buffer_is_host(src->buffer) ||
+            ggml_backend_buffer_get_usage(src->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS ||
+            !ggml_is_contiguous(src) || !ggml_is_contiguous(dst) || !ggml_backend_buffer_is_meta(dst->buffer) ||
+            ggml_nbytes(src) != ggml_nbytes(dst)) {
+        return false;
+    }
+    return ggml_backend_meta_upload_async(backend_dst, dst, src->data);
+}
+
 static void ggml_backend_meta_synchronize(ggml_backend_t backend) {
     const size_t n_backends = ggml_backend_meta_n_backends(backend);
     for (size_t i = 0; i < n_backends; i++) {
@@ -2660,7 +2739,7 @@ static const ggml_backend_i ggml_backend_meta_i = {
     /* .get_tensor_async        = */ ggml_backend_meta_get_tensor_async,
     /* .set_tensor_2d_async     = */ nullptr,
     /* .get_tensor_2d_async     = */ nullptr,
-    /* .cpy_tensor_async        = */ nullptr,
+    /* .cpy_tensor_async        = */ ggml_backend_meta_cpy_tensor_async,
     /* .synchronize             = */ ggml_backend_meta_synchronize,
     /* .graph_plan_create       = */ nullptr,
     /* .graph_plan_free         = */ nullptr,
