@@ -125,6 +125,35 @@ Status: `todo`, `in progress`, `done` (link the commit), `deferred` (say what is
 - Local checks: `test-meta-fa-alloc` (new, CPU devices wrapped with a buffer type that reserves the CUDA copies): per-device size with an uneven 1/3 head split, q8_0 K and q4_0 V, unchanged after allocation, opt-out, mirrored K/V, FA output identical to one device. `test-backend-sampler-tensor`, `test-alloc`, `test-llama-context` pass. Probe cost 2.7 us per FA node and call on CPU.
 - To measure: startup `compute buffer size` lines per CUDA device for target and draft, with and without `GGML_META_FA_SCRATCH_FULL=1`; then `micro,decode,parallel,long-context` to confirm no speed change; run once under `compute-sanitizer --tool memcheck` on a short prompt (an under-sized reservation shows up as an out-of-bounds write). Then spend the freed memory on `-c` / `--kv-unified-per-slot`.
 
+### 19. Qwen3.8-Flash-Next (qwen4exp) on the target GPUs (local) - deferred: too slow on this hardware (branch `fix/qwen4exp-mtp-kidxs`, 2026-10-29)
+
+Side target, not the production model: Qwen3.8-Flash-Next, arch `qwen4exp`, 179B A3B MoE, IQ4_XS (93 GiB), 48 layers, 512 experts per layer, top-10, expert width 640, embedded MTP head with dense attention (the trunk uses QSA sparse attention and hyper-connections). It does not fit in 28 GB of VRAM, so the routed experts stay in host memory (`--n-cpu-moe`, ~1.3 GB per layer, pinned `CUDA_Host`). Host link: 5070 Ti on PCIe Gen4 x16 (28.4 GB/s H2D measured), 5070 on Gen4 x4 (6.5 GB/s).
+
+Fixes on the branch (all upstream code paths, none of our carried patches were at fault):
+- `8ff9e5a7a`/`b1bddeb84` MTP head: the draft graph built the k-pool input although the MTP layer is dense, the inputs stayed unallocated and the server aborted on `GGML_ASSERT(buffer)` in `common_context_can_seq_rm`. Net change: build no k-pool input when `dsv4_compress_ratios[il] == 0`. Identical to the condition in upstream #30592 (draft); drop ours when it merges. The second commit reuses the first commit's subject; squash before carrying.
+- `0d494bc8c` meta split-state stack overflow: a stale `split_state_cache` entry clears the whole cache, and in the middle of a deep graph the recursive calculation then ran over ~28 layers and overflowed the 8 MB main-thread stack (MTP verify batch under `-sm tensor`, `ffn_moe_weights_norm-28`). An iterative bottom-up warm-up computes uncached ancestors first; cache semantics unchanged. `ulimit -s 65536` was the workaround.
+
+`-sm tensor` op offload of host weights (the meta device had no `offload_op`, so prefill ran the experts on the CPU at ~60 t/s flat in `-ub`):
+- `a98d3f66b` meta `offload_op` (all devices would offload) + the scheduler copy of a host weight keeps it as `src[0]` (idea from upstream #21717, which is stale and adds no offload) + the copy gets the weight's own split from the model callback. `9464c7e73` skips `sched_copy_experts` under `-sm tensor` (it asserts on the meta backend; a prefill batch uses nearly every expert anyway). `810b69588` async per-device uploads (`cpy_tensor_async`). `25286234b`/`452019f37` `GGML_META_OFFLOAD_SPLIT=w0,w1` re-splits only the streamed weights (granularity = gcd of the model slices; 640 = 5 x 128 here). `b2878ab5a` CUDA: a 2D copy whose width equals both pitches becomes one `cudaMemcpyAsync`.
+- `scripts/fork/h2d2d.cu` (debug, drop later): on this box `cudaMemcpy2DAsync` from pinned memory falls off a cliff above ~256 B per row (5070 Ti: 22.5 GB/s at 216 B, 3.1 at 288 B, 2.3 at 360 B = whole contiguous rows; 1D 28.4). The x4 GPU gets 2-6.5 GB/s for any shape. So any share of the streamed experts on the x4 GPU costs more than it saves; `1,0` is the best split here.
+- KLD vs `-sm layer -ncmoe 48`, 16 chunks: `-sm tensor` without offload RMS dp 7.17 %, with offload 7.12 %, with `82,18` 7.37 %, with `1,0` mean KLD 0.0397 / RMS dp 7.27 % / same top 95.1 %. Offload and re-split are numerically clean; the ~0.04 KLD of `-sm tensor` vs `-sm layer` on this model predates this work and is larger than on the 27B (0.008), not investigated.
+
+Measured (`-ncmoe 48`, pp4096, t/s):
+
+| | `-ub 2048` | `-ub 4096` | tg128 |
+|---|---|---|---|
+| `-sm tensor`, no offload | 63 | ~67 | |
+| `-sm tensor` offload, model split | 253 | 405 | |
+| `-sm tensor` offload, `GGML_META_OFFLOAD_SPLIT=1,0` | 452 | 631 | 15.5 |
+| `-sm layer` (op offload to CUDA0) | 641 | 756 | 18.3 |
+
+- `-sm layer` wins both on this hardware: decode is bound by the CPU reading ~1.2 GB of experts per token, and tensor parallelism adds two cross-GPU reductions per layer over the x4 link. Server use with `-sm layer`, `--fit`, `--moe-cache-mib 4096` and MTP + ngram-mod gave pp 200-300 t/s on short turns (each batch uploads nearly all host experts regardless of prompt length) and tg 10-20 t/s. Target was > 1000 pp / 30+ tg; not reachable without more VRAM or a faster second link.
+- `--fit` only picks the context when `-c` is unset: with `--fit-ctx 4096` it shrank the context to fit more expert layers. Set `-c` explicitly.
+
+Upstream PRs checked for this target: #30592 same MTP fix (keep ours until merged); #27861 superseded by merged `--moe-cache-mib` (#29887/#30112/#30637, `-sm layer` only, throws under `-sm tensor`); #28699 superseded by master's pooled k-pool cache; #30815 QSA query chunking (watch: saves VRAM only at `-ub` > 2048); #24549 no-op for qwen MTP (no shared memory); #29191 iGPU/UMA only; #21717 basis of the copy split above, not carried as is; #21067 weight prefetch (stale, bypasses the expert cache, event-sync concerns; a narrow own version was designed but not built).
+
+If this is picked up again: (1) prefetch layer N+1's experts on a second CUDA0 stream into two fixed ping-pong buffers (~2.6 GB) while layer N computes, whole tensors for `-ub` >= 512, off for small batches and with the MoE cache; estimate 900-1100 pp at `-ub 4096` (`max(2.2 s upload, 3.2 s compute)` per ubatch instead of the sum); (2) measure plain decode without `--spec-type` (with CPU experts an MTP verify reads ~4x the experts, it may not pay); (3) a split-aware `get_alloc_size` for the streamed copies under `-sm tensor`; (4) automatic offload target (fastest host link) if `-sm tensor` is ever preferred.
+
 ## Considered, not now
 
 - #29208 clamp the draft context to n_ctx_train with --kv-unified - dropped: no effect with our `-c 262144` (n_ctx_seq == n_ctx_train already), and it shrinks the draft KV below the target's in two cases: non-unified `-np N` (draft gets n_ctx/N split N ways) and unified pools above n_ctx_train (slots together can outgrow the clamped draft pool).
