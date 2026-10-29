@@ -842,12 +842,22 @@ static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, co
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
+// local: cudaMemcpy2DAsync is far slower than a 1D copy for rows above ~256 B even when they are back to back
+// (sm_120, pinned host, 360 B rows: 2.3 vs 28.4 GB/s), so copy a contiguous 2D range as one block
+static cudaError_t ggml_cuda_memcpy_2d_async(void * dst, size_t dpitch, const void * src, size_t spitch,
+        size_t width, size_t height, cudaMemcpyKind kind, cudaStream_t stream) {
+    if (width == dpitch && width == spitch) {
+        return cudaMemcpyAsync(dst, src, width*height, kind, stream);
+    }
+    return cudaMemcpy2DAsync(dst, dpitch, src, spitch, width, height, kind, stream);
+}
+
 static void ggml_backend_cuda_buffer_set_tensor_2d(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const void * data,
         size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    CUDA_CHECK(cudaMemcpy2DAsync(
+    CUDA_CHECK(ggml_cuda_memcpy_2d_async(
         (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
@@ -857,7 +867,7 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    CUDA_CHECK(cudaMemcpy2DAsync(
+    CUDA_CHECK(ggml_cuda_memcpy_2d_async(
         data, stride_data, (const char *) tensor->data + offset, stride_tensor, size, n_copies, cudaMemcpyDeviceToHost, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
@@ -2678,7 +2688,7 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    CUDA_CHECK(cudaMemcpy2DAsync(
+    CUDA_CHECK(ggml_cuda_memcpy_2d_async(
         (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cuda_ctx->stream()));
 }
 
@@ -2689,7 +2699,7 @@ static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const 
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    CUDA_CHECK(cudaMemcpy2DAsync(
+    CUDA_CHECK(ggml_cuda_memcpy_2d_async(
         data, stride_data, (const char *) tensor->data + offset, stride_tensor, size, n_copies, cudaMemcpyDeviceToHost, cuda_ctx->stream()));
 }
 
