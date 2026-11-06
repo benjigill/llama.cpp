@@ -143,7 +143,7 @@ number	kind	verdict	head	date	note
 28221	pr	skip	b63df384218a	2026-10-12	draft-model load NaN split
 28232	pr	skip	31d304b92f9f	2026-10-12	EOG truncation in spec results; output already correct
 28252	issue	skip	-	2026-10-12	fixed by carried #26827
-28265	pr	carried	c2c3d82c1204	2026-10-12	qwen35 ssm_out 2D
+28265	pr	skip	c2c3d82c1204	2026-10-28	superseded by upstream #30823 (same qwen35 2D ssm_out reshape), dropped in the 2026-10-28 sync
 28277	pr	skip	a2ec6b0fffe9	2026-10-12	server --connect
 28287	disc	skip	-	2026-10-12	CPU FFN offload
 28333	pr	watch	7abbba20a8ac	2026-10-12	zero stale MTP pending_h at pos 0; same root cause as #30141
@@ -161,7 +161,7 @@ number	kind	verdict	head	date	note
 28584	disc	skip	-	2026-10-12	MoE
 28588	disc	skip	-	2026-10-12	Flash-Next
 28671	pr	skip	ff2b436762b3	2026-10-12	TOP_K CUB fallback; CCCL >= 3.2 uses DeviceTopK
-28702	pr	carried	7ecad64a5282	2026-10-12	reviewed through this head; our copy is the 09-22 Q4_K-only form; later commits are the stock-MMQ rewrite plus an op-offload fix (n/a without -ot)
+28702	pr	skip	7ecad64a5282	2026-10-28	closed upstream 2026-10-27, replaced by merged #29948; dropped in the 2026-10-28 sync
 28766	disc	skip	-	2026-10-12	DeepSeek
 28790	issue	skip	-	2026-10-12	Windows build
 28815	pr	skip	eef117ec8d56	2026-10-12	test fixture
@@ -197,7 +197,7 @@ number	kind	verdict	head	date	note
 29796	pr	skip	fc92d666c734	2026-10-12	sync skip gated on device_count == 1
 29930	disc	skip	-	2026-10-12	Flash-Next
 29935	issue	watch	-	2026-10-19	seed: quantized KV + Q->ne[1] > 2 (our MTP verify, up to 8 under kvu) takes MMA with whole-cache f16 conversion per FA call; fix path #30202 (same-type K/V only)
-29948	pr	watch	b6e0f03348b5	2026-10-12	maintainer-requested alternative to carried #28702 (interleaved rows); Q4_K -2.5% vs #28702 on GB10; at merge drop #28702 but keep meta alloc dep ba4741198
+29948	pr	adopt	b6e0f03348b5	2026-10-28	merged upstream 2026-10-25, adopted in the 2026-10-28 sync in place of #28702; meta alloc dep ba4741198 kept (meta part only); target A/B pending on PR #27
 30012	pr	skip	d1dd8e8f86e4	2026-10-19	sleep race; only with --sleep-idle-seconds
 30059	pr	skip	03550d187baf	2026-10-12	MoE expert cache
 30071	disc	skip	-	2026-10-12	Flash-Next
@@ -239,7 +239,7 @@ number	kind	verdict	head	date	note
 30523	pr	skip	a28b5f210565	2026-10-19	error instead of abort on oversized batch; hardening only
 30541	pr	skip	0e3dbf0f23cf	2026-10-19	on-device state copy of quantized KV; our spec ckpts are PARTIAL_ONLY (no attn KV after #30514), recurrent state F32
 30553	pr	skip	5a32fef3edd4	2026-10-19	Stream-K cap only when nwork < nsm; ne00 >= 5120 keeps nwork above 70
-30573	pr	carried	9ece86a6c728	2026-10-19	FA vec WAR race fix; committed ba5a7d20d; CUDA build/tests/A-B pending
+30573	pr	skip	9ece86a6c728	2026-10-28	merged upstream (99db719bd), dropped our copy in the 2026-10-28 sync
 30594	pr	skip	f6dea514f021	2026-10-19	MoE expert cache; dense 27B
 30662	pr	skip	0051ee070254	2026-10-19	1-line graph eviction guard; minor, arrives with sync
 30663	pr	skip	14626b5f59bd	2026-10-19	DFlash2 sampling
