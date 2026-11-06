@@ -120,7 +120,7 @@ static void test_tensor_mtp_d2t(const test_args & args) {
         ggml_build_forward_expand(res.get_gf(), res.t_logits);
 
         llm_graph_params params = {};
-        params.arch = LLM_ARCH_QWEN35;
+        params.model = model.get();
         params.hparams = model->hparams;
         params.cparams.n_outputs_max_per_seq = 1;
         int8_t output_empty[] = {0, 0};
@@ -152,7 +152,7 @@ static void test_tensor_mtp_d2t(const test_args & args) {
     llama_seq_id * seq_id[] = {&seq_ids[0], &seq_ids[1]};
     int8_t output[] = {1, 1};
     llm_graph_params params = {};
-    params.arch = LLM_ARCH_QWEN35;
+    params.model = model.get();
     params.hparams = model->hparams;
     params.cparams.n_outputs_max_per_seq = 1;
     params.ubatch.n_tokens = 2;
