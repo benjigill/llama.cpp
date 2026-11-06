@@ -3146,9 +3146,8 @@ public:
             return;
         }
 
-        // merge nearby small ranges of one device tensor into a single read: interleaved cells otherwise cost one read each,
-        // and a buffer without a batched get (meta under -sm tensor) blocks on every one
-        // large ranges and host buffers keep the direct read, where the staging copy would cost more than the read it saves
+        // merge nearby small ranges of one device tensor into one read: without a batched get (meta, -sm tensor) each range blocks
+        // large ranges and host buffers keep the direct read, where the staging copy would cost more than it saves
         const size_t small_range = 64*1024;
 
         struct read_list {

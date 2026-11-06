@@ -2820,7 +2820,7 @@ private:
                 slot.prompt.checkpoints.back()->n_tokens == slot.prompt.n_tokens() - n_tokens_cur &&
                 slot.prompt.checkpoints.back()->pos_max == pos_max) {
             // adopt the checkpoint so the min-step eviction below does not erase it
-            // id_task is slot bookkeeping, not snapshot data, and the object was created non-const, so a cache entry sharing it is unaffected
+            // id_task is slot bookkeeping, not snapshot data; the object is created non-const, so the cast is safe
             const_cast<common_prompt_checkpoint &>(*slot.prompt.checkpoints.back()).id_task = id_task;
             return;
         }
