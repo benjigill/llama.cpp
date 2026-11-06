@@ -19,7 +19,6 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
-#include <memory>
 #include <cstdio>
 
 #if defined(_WIN32) && !defined(_WIN32_WINNT)
@@ -912,8 +911,7 @@ bool glob_match(const std::string & pattern, const std::string & str);
 //
 
 #ifdef _WIN32
-std::wstring utf8_to_wstring(const std::string & str);
-std::string  wstring_to_utf8(const std::wstring & str);
+std::string wstring_to_utf8(const std::wstring & str);
 #endif
 
 //
@@ -924,9 +922,6 @@ std::string  wstring_to_utf8(const std::wstring & str);
 // and setting an empty value unsets the variable
 std::string common_get_env(const std::string & name);
 void        common_set_env(const std::string & name, const std::string & value);
-
-// reads a path from the environment, an unset variable gives an empty path
-std::filesystem::path common_get_path_from_env(const std::string & name);
 
 //
 // Filesystem utils
@@ -1299,41 +1294,19 @@ enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
 // prompt utils
 //
 
-class common_shared_state_buffer {
-public:
-    size_t size() const {
-        return storage ? storage->size() : 0;
-    }
+// leave default-inserted elements uninitialized; callers must fill them before use
+template <typename T>
+struct common_no_init_allocator : std::allocator<T> {
+    template <typename U> struct rebind { using other = common_no_init_allocator<U>; };
 
-    bool empty() const {
-        return !storage || storage->empty();
-    }
+    common_no_init_allocator() = default;
+    template <typename U> common_no_init_allocator(const common_no_init_allocator<U> &) {}
 
-    const uint8_t * data() const {
-        return storage ? storage->data() : nullptr;
-    }
-
-    // Allocate fresh storage for a complete state snapshot. Copies of this
-    // object keep referencing the previous immutable snapshot; they are never
-    // modified in place. Only the newly allocated, uniquely owned buffer is
-    // exposed as mutable while the caller captures the replacement snapshot.
-    uint8_t * reset(size_t n) {
-        // a buffer nobody else references (e.g. the per-round speculative checkpoint) is reused in place
-        if (storage && storage.use_count() == 1) {
-            storage->resize(n);
-        } else {
-            storage = std::make_shared<std::vector<uint8_t>>(n);
-        }
-        return storage->data();
-    }
-
-    void clear() {
-        storage.reset();
-    }
-
-private:
-    std::shared_ptr<std::vector<uint8_t>> storage;
+    template <typename U> void construct(U * p) { ::new ((void *) p) U; }
 };
+
+// sequence state data, filled by llama_state_seq_get_data_ext()
+using common_state_data = std::vector<uint8_t, common_no_init_allocator<uint8_t>>;
 
 struct common_prompt_checkpoint {
     int64_t n_tokens;
@@ -1344,11 +1317,8 @@ struct common_prompt_checkpoint {
     llama_pos pos_min;
     llama_pos pos_max;
 
-    // Snapshot payloads are immutable after capture and can be shared safely
-    // between a live slot and host-memory prompt-cache entries. Copying a
-    // checkpoint therefore copies only the ref-counted handles, not the bytes.
-    common_shared_state_buffer data_tgt;
-    common_shared_state_buffer data_dft;
+    common_state_data data_tgt;
+    common_state_data data_dft;
 
     // (optional) speculative-decoding implementation state stashed with the checkpoint
     // (e.g. eagle3's deferred-boundary g_embd row)
