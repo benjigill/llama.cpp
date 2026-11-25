@@ -117,7 +117,12 @@ int main(int argc, char ** argv) {
     const auto & params_spec = params.speculative;
 
     params.speculative.ngram_mod.n_vocab = llama_vocab_n_tokens(vocab);
-    struct common_speculative * spec = common_speculative_init(params.speculative, 1);
+    struct common_speculative * spec = nullptr;
+    try {
+        spec = common_speculative_init(params.speculative, 1);
+    } catch (const std::exception & e) {
+        LOG_ERR("%s: %s\n", __func__, e.what());
+    }
 
     if (spec == nullptr) {
         LOG_ERR("%s", "failed to initialize speculative decoding\n");
