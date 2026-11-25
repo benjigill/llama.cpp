@@ -122,27 +122,28 @@ Tell the user that this sync cannot merge until the Linux box checks pass. Give 
 # 0. stop any running llama-server (it holds the GPUs and skews the bench)
 pkill -f llama-server
 
-# 1. baseline: current master in its own worktree (first time: worktree add; later: checkout)
+# 1. baseline: build origin/master into build-master/ (same checkout, no worktree)
+git status --short --untracked-files=no   # must be empty before switching branches
 git fetch origin
-git worktree add --detach ../llama-master origin/master 2>/dev/null || git -C ../llama-master checkout --detach origin/master
-cmake -S ../llama-master -B ../llama-master/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_BUILD_TYPE=Release
-cmake --build ../llama-master/build -j
+git switch --detach origin/master
+cmake -B build-master -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_BUILD_TYPE=Release
+cmake --build build-master -j
 
-# 2. candidate: the sync branch
-git switch sync/upstream-<date>
+# 2. candidate: the sync branch into build/ (from here on, do not rebuild build-master: it would compile the branch)
+git switch sync/upstream-<date> && git pull --ff-only
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 
 # 3. correctness of the CUDA ops our patches touch (all lines must say OK)
-build/bin/test-backend-ops -b CUDA0 -j 8 -o MUL_MAT,MUL_MAT_Q_GATE_UP_SWIGLU_DOWN,GATED_DELTA_NET,SSM_CONV
+build/bin/test-backend-ops -b CUDA0 -j 8 -o MUL_MAT,MUL_MAT_VEC_FUSION,GATED_DELTA_NET,SSM_CONV
 
 # 4. A/B benchmark (results land in bench-results/<label>)
-python3 scripts/fork/bench_qwen38.py run --bin ../llama-master/build/bin --label master --model <model.gguf> --probabilistic
-python3 scripts/fork/bench_qwen38.py run --bin build/bin --label sync-<date> --model <model.gguf> --probabilistic
+python3 scripts/fork/bench_qwen38.py run --bin build-master/bin --label master --model "$M" --probabilistic
+python3 scripts/fork/bench_qwen38.py run --bin build/bin --label sync-<date> --model "$M" --probabilistic
 python3 scripts/fork/bench_qwen38.py compare bench-results/master bench-results/sync-<date>
 
 # 5. smoke test: server with MTP + ngram-mod, then two requests from a second terminal
-GGML_CUDA_P2P=1 CUDA_VISIBLE_DEVICES=0,1 build/bin/llama-server -m <model.gguf> --port 8080 \
+GGML_CUDA_P2P=1 CUDA_VISIBLE_DEVICES=0,1 build/bin/llama-server -m "$M" --port 8080 \
   --split-mode tensor --tensor-split 15,13 --main-gpu 1 --n-gpu-layers 999 \
   -c 180000 --cache-type-k q8_0 --cache-type-v q4_0 --flash-attn on --jinja \
   --spec-type draft-mtp,ngram-mod --spec-draft-n-max 3 --spec-draft-sampling probabilistic \

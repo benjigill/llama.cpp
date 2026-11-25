@@ -240,15 +240,16 @@ Hand the user the commands for the Linux box, fully written out:
 # 0. stop any running llama-server (it holds the GPUs and skews the bench)
 pkill -f llama-server
 
-# 1. baseline: current master in its own worktree (first time: worktree add; later: checkout)
+# 1. baseline: build origin/master into build-master/ (same checkout, no worktree)
 #    FA_QUANTS=q8_0-q4_0 matches our KV types; a default build converts K/V to f16 for FA decode
+git status --short --untracked-files=no   # must be empty before switching branches
 git fetch origin
-git worktree add --detach ../llama-master origin/master 2>/dev/null || git -C ../llama-master checkout --detach origin/master
-cmake -S ../llama-master -B ../llama-master/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DGGML_CUDA_FA_QUANTS=q8_0-q4_0 -DCMAKE_BUILD_TYPE=Release
-cmake --build ../llama-master/build -j
+git switch --detach origin/master
+cmake -B build-master -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DGGML_CUDA_FA_QUANTS=q8_0-q4_0 -DCMAKE_BUILD_TYPE=Release
+cmake --build build-master -j
 
-# 2. candidate
-git switch feat/<short-name> && git pull
+# 2. candidate into build/ (from here on, do not rebuild build-master: it would compile the branch)
+git switch feat/<short-name> && git pull --ff-only
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DGGML_CUDA_FA_QUANTS=q8_0-q4_0 -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 
@@ -257,17 +258,17 @@ build/bin/test-backend-ops -b CUDA0 -j 8 -o <OPS>
 build/bin/test-backend-ops -b CUDA1 -j 8 -o <OPS>
 
 # 4. kernel speed, master vs candidate (kernel PRs only)
-../llama-master/build/bin/test-backend-ops perf -b CUDA0 -o <OPS>
+build-master/bin/test-backend-ops perf -b CUDA0 -o <OPS>
 build/bin/test-backend-ops perf -b CUDA0 -o <OPS>
 
 # 5. end-to-end A/B (results in bench-results/<label>)
-python3 scripts/fork/bench_qwen38.py run --bin ../llama-master/build/bin --label master --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite <suites>
-python3 scripts/fork/bench_qwen38.py run --bin build/bin --label <short-name> --model <model.gguf> --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite <suites>
+python3 scripts/fork/bench_qwen38.py run --bin build-master/bin --label master --model "$M" --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite <suites>
+python3 scripts/fork/bench_qwen38.py run --bin build/bin --label <short-name> --model "$M" --mmproj <mmproj.gguf> --production --ngram-table <table.bin> --suite <suites>
 python3 scripts/fork/bench_qwen38.py compare bench-results/master bench-results/<short-name>
 
 # 6. numeric changes only: KL divergence vs master (scripts/get-wikitext-2.sh downloads the text)
-../llama-master/build/bin/llama-perplexity -m <model.gguf> -f wikitext-2-raw/wiki.test.raw --chunks 32 --kl-divergence-base bench-results/kld-master.bin -sm tensor -ts 15,13 -mg 1 -ngl 999 -fa on -ctk q8_0 -ctv q4_0
-build/bin/llama-perplexity -m <model.gguf> -f wikitext-2-raw/wiki.test.raw --chunks 32 --kl-divergence-base bench-results/kld-master.bin --kl-divergence -sm tensor -ts 15,13 -mg 1 -ngl 999 -fa on -ctk q8_0 -ctv q4_0
+build-master/bin/llama-perplexity -m "$M" -f wikitext-2-raw/wiki.test.raw --chunks 32 --kl-divergence-base bench-results/kld-master.bin -sm tensor -ts 15,13 -mg 1 -ngl 999 -fa on -ctk q8_0 -ctv q4_0
+build/bin/llama-perplexity -m "$M" -f wikitext-2-raw/wiki.test.raw --chunks 32 --kl-divergence-base bench-results/kld-master.bin --kl-divergence -sm tensor -ts 15,13 -mg 1 -ngl 999 -fa on -ctk q8_0 -ctv q4_0
 ```
 
 Keep the patch only if the numbers support it. Then:

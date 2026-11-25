@@ -294,10 +294,13 @@ Keep this list current. One line per patch: upstream PR (or `local`), short name
 - local tensor-split d2t draft sampling - allow backend sampling for Qwen35 MTP only when the d2t map and every selected head are mirrored; sharded heads and target sampling still use the CPU fallback; target-GPU validation pending
 - #30493 MMQ activation tile copy int2 (experimental) - +2.4% pp on Qwen3.8-27B Q4_K upstream (4090), but upstream found -8..-11% kernel regressions at large K and returned it to draft; keep only if our A/B wins
 - local merge nearby KV range reads on host state save - with -np 2 --kv-unified, prompt-cache saves of interleaved cells stall the server loop; was #30694, which upstream closed for #31391 (CUDA-only gather in the batched get of #30881); the meta buffer has no batched get, so under -sm tensor each range is still one blocking read; re-applied on top of ggml_backend_tensor_get_n; target A/B pending
+- #29768 CUDA graph recapture after stable replay (experimental) - when a graph that replayed unchanged changes shape, recapture at once instead of resetting warmup and running eagerly; speculative rounds alternate MTP/ngram-mod verify shapes, which is where those resets cost; needs VMM on every device; upstream +1.1% on RTX 5090 (Qwen3.8-27B Q4_K_M, batched-bench -npl 8), still draft upstream; drop it if `CUDA graph warmup reset` lines (with `GGML_CUDA_GRAPH_DEBUG=1`) are rare in production; target A/B pending
 
 Fork scripts and the manual steps they need (ngram-mod table, trimmed MTP draft vocab): `scripts/fork/README.md`.
 
 Benchmark: `scripts/fork/bench_qwen38.py` (A/B vs a master build, see the header of the file).
+
+Target box layout: one checkout, no git worktrees (they fill the disk and drift). Build origin/master into `build-master/` and the candidate branch into `build/`, switching branches in between; `build-master/` binaries stay valid after the switch, but do not rebuild that dir while another branch is checked out. A/B runs use `--bin build-master/bin` vs `--bin build/bin`.
 
 Backlog and outcomes of candidate improvements: `IMPROVEMENT_LEDGER.md`.
 
