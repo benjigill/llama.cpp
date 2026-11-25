@@ -51,7 +51,7 @@ struct server_prompt {
     // pos_min: min position of the live state
     // ckpt_exact: the checkpoints are valid only at their exact final position (hybrid/recurrent memory)
     // n_past == 0 without a checkpoint means that nothing can be reused
-    server_prompt_reuse get_reuse(int32_t n_prefix, bool has_new_tokens, int32_t n_swa, llama_pos pos_min, bool ckpt_exact) const;
+    server_prompt_reuse get_reuse(int32_t n_prefix, bool has_new_tokens, int32_t n_swa, llama_pos pos_min, bool ckpt_exact = false) const;
 };
 
 struct server_prompt_data {
