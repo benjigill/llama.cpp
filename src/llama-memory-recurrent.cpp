@@ -188,6 +188,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
     // of the sequence because their state isn't preserved for previous tokens
     if (seq_id >= (int64_t) size) {
         // could be fatal
+        LLAMA_LOG_WARN("%s: refused: seq_id %d >= size %u\n", __func__, (int) seq_id, size);
         return false;
     }
     if (0 <= seq_id) {
@@ -199,6 +200,8 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
             if (0 < p0 && p0 <= cell.pos && p1 > cell.pos) {
                 // a cell shared by several sequences cannot move back for only one of them
                 if (cell.seq_id.size() > 1) {
+                    LLAMA_LOG_WARN("%s: refused: cell %d of seq %d is shared by %zu seqs (p0 = %d, cell.pos = %d)\n",
+                            __func__, tail_id, (int) seq_id, cell.seq_id.size(), (int) p0, (int) cell.pos);
                     return false;
                 }
                 // the filter kept no layer (e.g. an MTP draft context), so only the position moves back
@@ -216,8 +219,8 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                 }
                 // cannot roll back beyond the available snapshots - the caller has to
                 // restore a checkpoint or reprocess the sequence
-                LLAMA_LOG_DEBUG("%s: cannot roll back recurrent state of seq %d by %d tokens (n_rs_seq = %u)\n",
-                        __func__, (int) seq_id, (int) rollback, n_rs_seq);
+                LLAMA_LOG_WARN("%s: refused: seq %d rollback %d, rs_max = %d, rs_idx = %u, pending = %d, cell %d, cell.pos = %d, p0 = %d (n_rs_seq = %u)\n",
+                        __func__, (int) seq_id, (int) rollback, (int) cell.rs_max, rs_idx[seq_id], (int) pending, tail_id, (int) cell.pos, (int) p0, n_rs_seq);
                 return false;
             }
             // invalidate tails which will be cleared
