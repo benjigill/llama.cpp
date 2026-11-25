@@ -121,7 +121,6 @@ static void test_tensor_mtp_d2t(const test_args & args) {
 
         llm_graph_params params = {};
         params.model = model.get();
-        params.hparams = model->hparams;
         params.cparams.n_outputs_max_per_seq = 1;
         int8_t output_empty[] = {0, 0};
         params.ubatch.n_tokens = 2;
@@ -153,7 +152,6 @@ static void test_tensor_mtp_d2t(const test_args & args) {
     int8_t output[] = {1, 1};
     llm_graph_params params = {};
     params.model = model.get();
-    params.hparams = model->hparams;
     params.cparams.n_outputs_max_per_seq = 1;
     params.ubatch.n_tokens = 2;
     params.ubatch.seq_id = seq_id;
