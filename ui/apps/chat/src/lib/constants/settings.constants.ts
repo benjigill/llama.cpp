@@ -5,27 +5,27 @@ import { DEFAULT_MCP_CONFIG } from './mcp.constants';
 import { SETTINGS_KEYS } from './settings-keys.constants';
 import { TITLE_GENERATION } from './title-generation.constants';
 import { FILE_GLOB_SEARCH_PICKERS } from './working-directory.constants';
-import {
-	Code,
-	Database,
-	Funnel,
-	ListRestart,
-	Monitor,
-	Moon,
-	PencilRuler,
-	SlidersVertical,
-	Sun
-} from '@lucide/svelte';
-import { SyncableParameterType } from '$lib/enums';
-import { SettingsFieldType } from '$lib/enums/settings.enums';
-import { ColorMode } from '$lib/enums/ui.enums';
+import Code from '@lucide/svelte/icons/code';
+import Database from '@lucide/svelte/icons/database';
+import File from '@lucide/svelte/icons/file';
+import Funnel from '@lucide/svelte/icons/funnel';
+import GlassWater from '@lucide/svelte/icons/glass-water';
+import ListRestart from '@lucide/svelte/icons/list-restart';
+import Monitor from '@lucide/svelte/icons/monitor';
+import Moon from '@lucide/svelte/icons/moon';
+import PencilRuler from '@lucide/svelte/icons/pencil-ruler';
+import SlidersVertical from '@lucide/svelte/icons/sliders-vertical';
+import Sun from '@lucide/svelte/icons/sun';
+import { SurfaceTheme, SyncableParameterType } from '#lib/enums/index.ts';
+import { SettingsFieldType } from '#lib/enums/settings.enums.ts';
+import { ColorMode } from '#lib/enums/ui.enums.ts';
 import type {
 	SettingsConfigValue,
 	SettingsEntry,
 	SettingsFieldConfig,
 	SettingsSection,
 	SettingsSectionEntry
-} from '$lib/types';
+} from '#lib/types/index.ts';
 
 /** Settings sections — slug is the routing identity, title is the display label. */
 export const SETTINGS_SECTIONS = {
@@ -76,6 +76,17 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				type: SettingsFieldType.SELECT
 			},
 			{
+				defaultValue: SurfaceTheme.PAPER,
+				help: 'Choose how the light theme draws its surfaces: Paper puts white panels, fields and buttons on a faint grey page; Matte puts grey glass on a white page. Dark mode is the same for both.',
+				key: SETTINGS_KEYS.SURFACE_THEME,
+				label: 'Light surfaces',
+				options: [
+					{ icon: File, label: 'Paper', value: SurfaceTheme.PAPER },
+					{ icon: GlassWater, label: 'Matte', value: SurfaceTheme.MATTE }
+				],
+				type: SettingsFieldType.SELECT
+			},
+			{
 				defaultValue: '',
 				help: `Set the API Key if you are using <code> ${CLI_FLAGS.API_KEY} </code> option for the server.`,
 				isPrivate: true,
@@ -113,7 +124,7 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				type: SettingsFieldType.CHECKBOX
 			},
 			{
-				defaultValue: true,
+				defaultValue: false,
 				help: 'Render the markdown in the message input as you write it: every line but the one you are on shows as it will look in the conversation. When disabled, the input shows the plain markdown text.',
 				key: SETTINGS_KEYS.LIVE_MARKDOWN_PREVIEW,
 				label: 'Live markdown preview in the message input',
@@ -136,7 +147,14 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 			},
 			{
 				defaultValue: false,
-				help: 'Show the Discover Models sidebar action to browse and download HuggingFace GGUF models. Turns the Hugging Face Hub API on while it is enabled. Only available in router mode.',
+				help: 'Show Models in the sidebar and "Manage models" in the model selector, to see, load and configure the models on the server.',
+				key: SETTINGS_KEYS.SHOW_MODELS_MANAGER,
+				label: 'Show Models',
+				type: SettingsFieldType.CHECKBOX
+			},
+			{
+				defaultValue: false,
+				help: 'Show Discover Models on the Models page, to browse and download HuggingFace GGUF models. Turns Models and the Hugging Face Hub API on while it is enabled. Only available in router mode.',
 				key: SETTINGS_KEYS.ENABLE_DISCOVER_MODELS,
 				label: 'Enable Discover Models',
 				type: SettingsFieldType.CHECKBOX
@@ -146,6 +164,13 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				help: 'Fetch model display data (avatars, context length, chat template) and everything in the Discover Models view from the Hugging Face Hub API. Locked on while Discover Models is enabled; can be turned on alone for just the display data.',
 				key: SETTINGS_KEYS.USE_HUGGING_FACE_HUB,
 				label: 'Use the Hugging Face Hub API',
+				type: SettingsFieldType.CHECKBOX
+			},
+			{
+				defaultValue: false,
+				help: 'Show MCP in the sidebar, to add and manage MCP servers. Servers already added keep working while it is hidden.',
+				key: SETTINGS_KEYS.SHOW_MCP,
+				label: 'Show MCP',
 				type: SettingsFieldType.CHECKBOX
 			},
 			{
@@ -307,7 +332,7 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				type: SettingsFieldType.CHECKBOX
 			},
 			{
-				defaultValue: true,
+				defaultValue: false,
 				help: 'Show open chats as browser-style tabs above the conversation, one per open chat. When disabled, only one chat is shown at a time.',
 				key: SETTINGS_KEYS.CONVERSATION_TABS,
 				label: 'Conversation tabs',
