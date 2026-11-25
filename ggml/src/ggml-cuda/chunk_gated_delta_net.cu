@@ -747,7 +747,7 @@ void ggml_cuda_op_gated_delta_net_chunked_impl(ggml_backend_cuda_context & ctx,
 
 // cache: when non-null (CUDA graph / fused state copy), the final state is written to cache->data.
 void ggml_cuda_op_gated_delta_net_chunked(ggml_backend_cuda_context & ctx, ggml_tensor * dst,
-                                          const ggml_cuda_gated_delta_net_fused_cache * cache) {
+                                          const ggml_cuda_gated_delta_net_fused_cache * cache, const float * s0) {
     const ggml_tensor * src_q     = dst->src[0];
     const ggml_tensor * src_k     = dst->src[1];
     const ggml_tensor * src_v     = dst->src[2];
@@ -794,7 +794,7 @@ void ggml_cuda_op_gated_delta_net_chunked(ggml_backend_cuda_context & ctx, ggml_
     const float scale = 1.0f / sqrtf((float) v_dim);
     const cudaStream_t stream = ctx.stream();
 
-    const float * s_d  = (const float *) src_state->data;
+    const float * s_d  = s0 != nullptr ? s0 : (const float *) src_state->data;
     const float * q_in = (const float *) src_q->data;
     const float * k_in = (const float *) src_k->data;
     const float * v_in = (const float *) src_v->data;

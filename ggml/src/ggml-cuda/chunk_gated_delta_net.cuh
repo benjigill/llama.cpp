@@ -4,8 +4,9 @@
 #include "gated_delta_net.cuh"
 #include "ggml.h"
 
+// s0: initial state, or nullptr for dst->src[5] (a replayed state differs from the op's state input)
 void ggml_cuda_op_gated_delta_net_chunked(ggml_backend_cuda_context & ctx, ggml_tensor * dst,
-                                          const ggml_cuda_gated_delta_net_fused_cache * cache);
+                                          const ggml_cuda_gated_delta_net_fused_cache * cache, const float * s0);
 
 // raw launch for one span of tokens: attention rows go to out, the final state to state_dst
 // dst only locates the scratch, so the span may be shorter than dst's token count
