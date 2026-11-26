@@ -2811,6 +2811,8 @@ private:
 
         cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
+        const int64_t t_ckpt_start = ggml_time_us();
+
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
         cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
         // stash the draft's speculative state with the checkpoint
@@ -2819,9 +2821,9 @@ private:
         slot.prompt.checkpoints.push_back(std::move(ckpt));
 
         SLT_INF(slot,
-                "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB, %.1f ms)\n",
                 (int) slot.prompt.checkpoints.size(), params_base.n_ctx_checkpoints, cur.pos_min,
-                cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
+                cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024, (ggml_time_us() - t_ckpt_start) / 1000.0);
     }
 
     // checkpoints are appended to the slot save file, after the llama state payload
@@ -4323,6 +4325,8 @@ private:
                                 if (reuse.ckpt) {
                                     const auto & cur = *reuse.ckpt;
 
+                                    const int64_t t_ckpt_start = ggml_time_us();
+
                                     // restore the context checkpoint
                                     if (!cur.load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) ||
                                         !cur.load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY)) {
@@ -4336,7 +4340,7 @@ private:
                                         // restore the draft's speculative state
                                         common_speculative_set_state(spec.get(), slot.id, cur.data_spec);
 
-                                        SLT_TRC(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", cur.pos_min, cur.pos_max, cur.n_tokens, reuse.n_past, (float) cur.size() / 1024 / 1024);
+                                        SLT_INF(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB, %.1f ms)\n", cur.pos_min, cur.pos_max, cur.n_tokens, reuse.n_past, (float) cur.size() / 1024 / 1024, (ggml_time_us() - t_ckpt_start) / 1000.0);
                                     }
                                 }
 

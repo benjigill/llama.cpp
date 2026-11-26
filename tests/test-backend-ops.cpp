@@ -5590,6 +5590,11 @@ struct test_gated_delta_net_replay : public test_case {
         return VARS_TO_STR8(head_count, head_size, n_seq_tokens, n_seqs, v_repeat, kda, n_pend, keep);
     }
 
+    double max_nmse_err() override {
+        // the CUDA chunked kernel (fp16 tensor cores) runs the new tokens of long ubatches, as in test_gated_delta_net
+        return !kda && head_size == 128 && n_seq_tokens >= 128 ? 2e-7 : 1e-7;
+    }
+
     test_gated_delta_net_replay(int64_t head_count = 4, int64_t head_size = 32, int64_t n_seq_tokens = 4, int64_t n_seqs = 1,
             int v_repeat = 1, bool kda = false, int64_t n_pend = 4, bool keep = true)
         : head_count(head_count), head_size(head_size), n_seq_tokens(n_seq_tokens), n_seqs(n_seqs),
