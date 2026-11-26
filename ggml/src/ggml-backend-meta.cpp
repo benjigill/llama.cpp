@@ -408,6 +408,18 @@ struct ggml_backend_meta_simple_tensor_container {
     std::vector<ggml_context_ptr> ctxs;
     std::map<const ggml_tensor *, std::vector<ggml_tensor *>> simple_tensors;
 
+    // external views that repeat between graph rebuilds (e.g. state checkpoints) share their slices, so that a
+    // graph that is reused without a rebuild does not exhaust ctxs
+    std::map<std::string, std::vector<ggml_tensor *>> view_slices;
+
+    void clear() {
+        for (ggml_context_ptr & ctx : ctxs) {
+            ggml_reset(ctx.get());
+        }
+        simple_tensors.clear();
+        view_slices.clear();
+    }
+
     ggml_backend_meta_simple_tensor_container(const ggml_init_params & params, const int n_simple) {
         ctxs.reserve(n_simple);
         for (int i = 0; i < n_simple; i++) {
@@ -1281,6 +1293,31 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
     ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) tensor->buffer->context;
     const size_t n_simple_bufs = ggml_backend_meta_buffer_n_bufs(tensor->buffer);
 
+    // a view identical to one already in this container reuses its slices
+    std::string view_key;
+    if (tensor->view_src != nullptr && &stc != &buf_ctx->stc_static) {
+        const auto add = [&](const void * p, size_t n) { view_key.append((const char *) p, n); };
+        add(&tensor->view_src, sizeof(tensor->view_src));
+        add(&tensor->view_offs, sizeof(tensor->view_offs));
+        add(&tensor->type, sizeof(tensor->type));
+        add(&tensor->op, sizeof(tensor->op));
+        add(&tensor->flags, sizeof(tensor->flags));
+        add(tensor->ne, sizeof(tensor->ne));
+        add(tensor->nb, sizeof(tensor->nb));
+        add(tensor->op_params, sizeof(tensor->op_params));
+        // a view of a view has the same root (view_src) and offset: its parent does not change the data it describes
+        if (tensor->op != GGML_OP_VIEW) {
+            add(tensor->src, sizeof(tensor->src));
+        }
+        view_key.append(tensor->name);
+
+        const auto it = stc.view_slices.find(view_key);
+        if (it != stc.view_slices.end()) {
+            stc.simple_tensors[tensor] = it->second;
+            return GGML_STATUS_SUCCESS;
+        }
+    }
+
     const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(stc, tensor, /*assume_sync =*/ true);
     GGML_ASSERT(ggml_nelements(tensor) == 0 || split_state.axis != GGML_BACKEND_SPLIT_AXIS_UNKNOWN);
     GGML_ASSERT(split_state.n_segments <= 16);
@@ -1404,6 +1441,9 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
         }
     }
 
+    if (!view_key.empty()) {
+        stc.view_slices[view_key] = simple_tensors;
+    }
     stc.simple_tensors[tensor] = simple_tensors;
 
     return GGML_STATUS_SUCCESS;
@@ -2139,11 +2179,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
         for (ggml_backend_buffer_t buf : used_buffers) {
             ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) buf->context;
             buf_ctx->stc_compute_index_next = buf_ctx->stc_compute_index ^ 1;
-            ggml_backend_meta_simple_tensor_container & stc = buf_ctx->stc_compute[buf_ctx->stc_compute_index_next];
-            for (ggml_context_ptr & ctx : stc.ctxs) {
-                ggml_reset(ctx.get());
-            }
-            stc.simple_tensors.clear();
+            buf_ctx->stc_compute[buf_ctx->stc_compute_index_next].clear();
         }
         size_t n_subgraphs  = 0;
         size_t max_tmp_size = 0;
